@@ -1,0 +1,15 @@
+# YOLO model weights (ultralytics re-downloads them automatically)
+*.pt
+
+# Python virtual environment and caches
+.venv/
+__pycache__/
+*.pyc
+
+# Run logs and ultralytics output
+*.log
+runs/
+
+# macOS / editor files
+.DS_Store
+.vscode/
