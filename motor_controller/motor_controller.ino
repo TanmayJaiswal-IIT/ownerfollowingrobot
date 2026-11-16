@@ -6,12 +6,12 @@
 //
 // Wiring (L298N): remove the ENA/ENB jumpers.
 //   Left motors (2 in parallel)  -> OUT1/OUT2,  Right motors (2 in parallel) -> OUT3/OUT4
-//   ENA -> D5, IN1 -> D7, IN2 -> D8, ENB -> D6, IN3 -> D9, IN4 -> D10
+//   ENA -> D5, IN1 -> D6, IN2 -> D7, IN3 -> D8, IN4 -> D9, ENB -> D10
 //   HC-SR04: TRIG -> D11, ECHO -> D12, VCC -> 5V, GND -> GND
 //   Battery + -> L298N 12V, battery - -> L298N GND AND Arduino GND (common ground)
 
-const int ENA = 5, IN1 = 7, IN2 = 8;
-const int ENB = 6, IN3 = 9, IN4 = 10;
+const int ENA = 5, IN1 = 6, IN2 = 7;
+const int ENB = 10, IN3 = 8, IN4 = 9;
 const int TRIG = 11, ECHO = 12;
 
 const unsigned long WATCHDOG_MS = 500;
