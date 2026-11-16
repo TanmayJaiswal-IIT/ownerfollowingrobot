@@ -46,9 +46,9 @@ Check every wire against this table (it matches the header of `motor_controller/
 | Left motor pair (2 in parallel) | L298N `OUT1` / `OUT2` | [ ] |
 | Right motor pair (2 in parallel) | L298N `OUT3` / `OUT4` | [ ] |
 | L298N `ENA` | Arduino `D5` (ENA jumper cap **removed**) | [ ] |
-| L298N `IN1` / `IN2` | Arduino `D7` / `D8` | [ ] |
-| L298N `ENB` | Arduino `D6` (ENB jumper cap **removed**) | [ ] |
-| L298N `IN3` / `IN4` | Arduino `D9` / `D10` | [ ] |
+| L298N `IN1` / `IN2` | Arduino `D6` / `D7` | [ ] |
+| L298N `IN3` / `IN4` | Arduino `D8` / `D9` | [ ] |
+| L298N `ENB` | Arduino `D10` (ENB jumper cap **removed**) | [ ] |
 | HC-SR04 `VCC` / `GND` | Arduino `5V` / `GND` | [ ] |
 | HC-SR04 `TRIG` / `ECHO` | Arduino `D11` / `D12` | [ ] |
 | Battery `+` → e-stop switch → | L298N `12V` terminal | [ ] |
@@ -200,7 +200,7 @@ Change **one** constant at a time and write every change in the results sheet.
 | No serial port appears | Power-only USB cable, or missing CH340 driver | Other cable; install driver |
 | `Resource busy` / port error in Python | Serial Monitor or another script has the port | Close Serial Monitor / stop the other script |
 | Upload fails | Wrong board or port, or Python is using the port | Select Uno + correct port; stop Python |
-| Motors never move | Battery off, ENA/ENB caps still on and D5/D6 not wired, missing common GND | Check in that order |
+| Motors never move | Battery off, ENA/ENB caps still on and D5/D10 not wired, missing common GND | Check in that order |
 | Motors only twitch for 0.5 s | Commands sent only once (Serial Monitor) | Expected; use `motor_test.py` |
 | One side never moves | Loose motor wire or EN pin wire | Re-seat wires on that side |
 | Motors stutter while following | FPS too low (watchdog stops between frames) | Use `--imgsz 320`, close other apps |
