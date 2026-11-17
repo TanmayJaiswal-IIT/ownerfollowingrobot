@@ -21,7 +21,7 @@ complexity. No ROS, no cloud, no custom model training.
 
 ## Hardware
 - Raspberry Pi 5 (primary) or Jetson Nano, running the vision code
-- USB webcam / Pi camera
+- Raspberry Pi Camera Module (`--source picam`) or USB webcam
 - Arduino Uno + L298N motor driver + 4 BO motors (left pair / right pair in parallel)
 - HC-SR04 ultrasonic sensor on the front, 18650 battery pack, physical emergency-stop switch
 - Development and testing happen first on a MacBook with its webcam (no robot attached)
@@ -44,6 +44,7 @@ camera -> follower.py (Pi/Mac)                      -> USB serial ->  motor_cont
 
 ## Files
 - `follower.py`: main loop, state machine, overlay, serial I/O. Gesture/re-ID timing constants at the top.
+- `camera.py`: `open_camera(source)`: Pi Camera Module via picamera2 (`--source picam`) or OpenCV webcam/video file.
 - `perception.py`: keypoints, hand gestures, torso size, clothing histogram and `best_match` re-ID (pure functions).
 - `control.py`: follow control (distance, steering, dynamic speed, ramp, back-off) and the `Search` scan as pure
   functions; their tuning constants at the top.
@@ -79,8 +80,11 @@ pip install -r requirements.txt
 python follower.py                                   # laptop test, no robot
 python follower.py --port /dev/cu.usbmodemXXXX       # Mac + Arduino
 python motor_test.py --port /dev/cu.usbmodemXXXX     # motor/safety bench test, wheels off ground
-python follower.py --port /dev/ttyACM0 --no-show     # Raspberry Pi
+python follower.py --port /dev/ttyACM0 --no-show     # Raspberry Pi + USB webcam
+python follower.py --source picam --port /dev/ttyACM0 --no-show   # Raspberry Pi + Camera Module
 ```
+On the Pi the venv needs `python3 -m venv --system-site-packages .venv` so it can see the apt package
+`python3-picamera2` (picamera2 can't be pip-installed into a plain venv).
 
 ## Conventions for changes
 - Keep everything in `follower.py` unless it grows past ~500 lines; then split into `perception.py`,
