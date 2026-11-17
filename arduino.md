@@ -33,7 +33,7 @@ Record results in the [Results sheet](#results-sheet) at the end.
 3. Battery off whenever you change wiring.
 4. When the Arduino is on USB, **do not** connect the L298N's `5V` pin to the Arduino's `5V`. Only GND is shared.
 5. Only one program can use the serial port: close the Arduino IDE's Serial Monitor before running Python.
-6. First floor runs use `MAX_SPEED = 150` in `follower.py`, in an open space.
+6. First floor runs use `MAX_SPEED = 150` in `control.py`, in an open space.
 
 ---
 
@@ -96,6 +96,8 @@ Multimeter checks (continuity / beep mode):
 
 **Optional quick check with Serial Monitor** (115200 baud, line ending **Newline**): type `M,150,150` and press Enter.
 All wheels turn forward for only about **0.5 s** and stop. That short burst is expected: it is the watchdog.
+The monitor also shows a stream of `D,<cm>` lines: that is the ultrasonic distance, sent after every ping
+(`999` = no echo). `follower.py` uses it for the minimum-distance back-off.
 Close the Serial Monitor before Phase D.
 
 ---
@@ -117,11 +119,12 @@ The script re-sends each command 20 times a second, so the motors run for 2 s pe
 | D5 | `5` Spin right | Left side forward, right side backward | Re-check D1/D2. | |
 | D6 | `6` Spin left | Left side backward, right side forward | Re-check D1/D2. | |
 | D7 | `7` Speed sweep | Note the PWM printed when **both** sides start turning | — | PWM = ___ |
+| D8 | `10` Ultrasonic readout | Distance in cm 5 times a second; matches a tape measure within a few cm on a flat board | "no reading" → re-upload the sketch, check TRIG/ECHO wiring | |
 
-After D7: set `MIN_SPEED` in `follower.py` to the D7 value + 10.
+After D7: set `MIN_SPEED` in `control.py` to the D7 value + 10.
 Also note if one side is clearly slower than the other (the car will drift; we can add a trim later).
 
-**Pass:** D1–D6 all correct, D7 value recorded.
+**Pass:** D1–D6 and D8 correct, D7 value recorded.
 
 ---
 
@@ -159,7 +162,7 @@ python follower.py --port /dev/cu.usbmodemXXXX --source 1
 | --- | --- | --- | --- | --- |
 | F1 | Raise one hand for 1 s | `[LOCK]` in the log, green OWNER box, state FOLLOW | See the gesture tips in CLAUDE.md | |
 | F2 | Stand far (2–3 m), centred | Both sides forward, `L ≈ R` | — | |
-| F3 | Stand close (under 1 m) | Wheels stop, `L=0 R=0` | Adjust `TARGET_H` (Phase G) | |
+| F3 | Stand closer than `TARGET_DIST` | Wheels stop, `L=0 R=0` | Adjust `TARGET_TORSO` (Phase G) | |
 | F4 | Stand to the car's **right** | Left wheels faster than right → car would turn **towards** you | Turns away → swap the left and right motor pairs at the L298N, then redo D1–D6 | |
 | F5 | Stand to the car's **left** | Right wheels faster than left | Same as F4 | |
 | F6 | Step out of view | `[LOST]`, wheels stop within about 0.3 s | — | |
@@ -174,16 +177,15 @@ python follower.py --port /dev/cu.usbmodemXXXX --source 1
 
 ## Phase G: Floor tests and tuning (car on the floor)
 
-Set `MAX_SPEED = 150` in `follower.py` first. Open space, even lighting, e-stop person ready.
+Set `MAX_SPEED = 150` in `control.py` first. Open space, even lighting, e-stop person ready.
 
-1. **Calibrate distance:** stand exactly 1 m in front of the camera (tape measure), read `Size x` on screen,
-   set `TARGET_H = x`.
+1. **Calibrate distance:** follow `plans/distance_plan.md` Phase 3.
 2. **Straight follow:** walk slowly straight away from the car, then stop. The car follows and stops at about 1 m.
 3. **Turning:** walk in a wide curve.
    - Car weaves left/right → lower `K_TURN` (e.g. 160 → 120).
    - Car turns too slowly / loses you on curves → raise `K_TURN`.
 4. **Speed:**
-   - Car lunges or overshoots and bumps towards you → lower `K_FWD` (e.g. 500 → 350).
+   - Car lunges or overshoots and bumps towards you → lower `K_FWD` (e.g. 1000 → 700).
    - Car falls behind → raise `K_FWD`, then `MAX_SPEED` (max 200 for now).
 5. **Obstacle on the floor:** place a box between you and the car while it follows → it stops before the box.
 6. **Full demo run:** lock → walk around → second person crosses → step out and back → unlock.
@@ -226,7 +228,7 @@ Date: __________  Testers: __________________
 | Phase E safety (E1–E7) | pass / fail |
 | E4 obstacle stop distance | cm |
 | Phase F tethered (F1–F10) | pass / fail |
-| `TARGET_H` (1 m) | |
+| `TARGET_TORSO` (at `TARGET_DIST`) | |
 | `K_FWD` / `K_TURN` / `MAX_SPEED` final | |
 | FPS during floor test | |
 | Notes / problems | |

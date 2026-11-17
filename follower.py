@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """
 Owner-following robot (DesiPachinos)
-Phase 1 features: owner LOCK, UNLOCK, RE-LOCK after losing the owner, SAFE-DISTANCE FOLLOW.
+Features: owner LOCK, UNLOCK, RE-LOCK, SAFE-DISTANCE FOLLOW with dynamic speed and back-off,
+OWNER SEARCH (rotate in place to find a lost owner; disable with --no-search).
 
 Gestures (hold them still):
   - Raise ONE hand above your head for ~1 s  -> robot locks onto you
   - Raise BOTH hands above your head for ~1.5 s -> robot unlocks and goes idle
+
+States (allowed changes: TRANSITIONS in control.py; every change is logged as "[STATE] old -> new (reason)"):
+  IDLE    waiting for a lock gesture, motors stopped
+  FOLLOW  following the owner
+  SEARCH  owner lost: turning in place to find them, then back to FOLLOW or IDLE
+  LOST    stopped: owner outran the robot (or lost with --no-search)
 
 Run on a laptop (no robot):    python follower.py
 Run with the Arduino attached: python follower.py --port /dev/tty.usbmodem1101   (Mac)
@@ -17,12 +24,13 @@ import logging
 import time
 
 import cv2
-import numpy as np
 from ultralytics import YOLO
 
-# ---- COCO keypoint indices used by YOLOv8-pose ----
-NOSE, L_SHOULDER, R_SHOULDER, L_WRIST, R_WRIST = 0, 5, 6, 9, 10
-KP_CONF = 0.5            # ignore keypoints below this confidence
+from control import (BACKOFF_CENTER, BACKOFF_SPEED, MAX_SPEED, MIN_DIST_CM, OUTRUN_DIST, OUTRUN_TIME,
+                     SEARCH_CONFIRM, SIZE_SMOOTH, SONAR_MAX_AGE, TARGET_DIST, TARGET_TORSO, VEL_WINDOW,
+                     FollowState, Search, centre_error, est_distance, follow_command, gap_rate, mix,
+                     owner_speed, parse_distance, ramp_fwd, transition_allowed, update_backoff)
+from perception import best_match, hands_up, torso_hist, torso_ratio
 
 # ---- Tuning (adjust during testing) ----
 LOCK_HOLD = 1.0          # s, one hand up to lock
@@ -30,13 +38,9 @@ UNLOCK_HOLD = 1.5        # s, both hands up to unlock
 COOLDOWN = 2.0           # s after unlock before anyone can lock again
 LOST_STOP = 0.3          # s owner missing before the robot stops
 REID_THRESH = 0.75       # clothing-colour similarity needed to re-lock (0..1)
-TARGET_H = 0.55          # owner box height / frame height at the wanted distance (~1 m); tune!
-DEADBAND = 0.05          # no forward motion when this close to the target size
-CENTER_DEADBAND = 0.10   # no turning when owner is this close to the frame centre
-K_FWD = 500              # forward gain
-K_TURN = 160             # turning gain
-MAX_SPEED = 200          # PWM limit (0..255)
-MIN_SPEED = 70           # PWM below which the motors stall
+NOT_FOUND_SHOW = 3.0     # s the "OWNER NOT FOUND" banner stays up after a failed search
+# Search speed, step and timing live in control.py.
+# Distance, steering and speed tuning lives in control.py.
 
 # ---- Display and logging ----
 UI_SCALE = 1.0           # multiplier for all on-screen text; raise it if text is still too small
@@ -44,7 +48,8 @@ LOG_EVERY = 1.0          # s between status lines in the terminal
 LOG_FILE = "follower.log"  # log file, overwritten on every run
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
-STATE_COLOURS = {"IDLE": (230, 230, 230), "FOLLOW": (0, 230, 0), "LOST": (0, 0, 255)}  # BGR
+STATE_COLOURS = {"IDLE": (230, 230, 230), "FOLLOW": (0, 230, 0), "LOST": (0, 0, 255),
+                 "SEARCH": (0, 200, 255)}  # BGR
 
 log = logging.getLogger("follower")
 
@@ -57,62 +62,31 @@ def setup_logging():
         log.addHandler(handler)
 
 
-def keypoint(k, i):
-    x, y, c = k[i]
-    return (x, y) if c > KP_CONF else None
+def on_outrun(gap):
+    """Owner got away at full speed but is still visible: wait in LOST. If they then leave view, SEARCH starts."""
+    log.warning(f"[OUTRUN] owner faster than robot (gap ~{gap:.1f} m at full speed) -> stopped")
+    return "LOST"
 
 
-def hands_up(k):
-    """Number of wrists raised above the head (0, 1 or 2)."""
-    nose = keypoint(k, NOSE)
-    if nose is not None:
-        ref = nose[1]
-    else:
-        shoulders = [p for p in (keypoint(k, L_SHOULDER), keypoint(k, R_SHOULDER)) if p]
-        if not shoulders:
-            return 0
-        ref = min(p[1] for p in shoulders) - 40  # a bit above the shoulders
-    return sum(1 for w in (keypoint(k, L_WRIST), keypoint(k, R_WRIST)) if w and w[1] < ref)
-
-
-def torso_hist(frame, box):
-    """Hue/saturation histogram of the upper body, used to recognise the owner's clothes."""
-    H, W = frame.shape[:2]
-    x1, y1, x2, y2 = box
-    h, w = y2 - y1, x2 - x1
-    xa, xb = int(max(0, x1 + 0.2 * w)), int(min(W, x2 - 0.2 * w))
-    ya, yb = int(max(0, y1 + 0.2 * h)), int(min(H, y1 + 0.6 * h))
-    crop = frame[ya:yb, xa:xb]
-    if crop.size == 0:
-        return None
-    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-    hist = cv2.calcHist([hsv], [0, 1], None, [30, 32], [0, 180, 0, 256])
-    cv2.normalize(hist, hist)
-    return hist
-
-
-def shape_speed(v):
-    v = max(-MAX_SPEED, min(MAX_SPEED, v))
-    if abs(v) < 20:
-        return 0
-    return int(np.sign(v) * max(abs(v), MIN_SPEED))
-
-
-def follow_command(box, W, H):
-    """Proportional control: steer toward the owner, drive forward until the box is TARGET_H tall."""
-    x1, y1, x2, y2 = box
-    err_x = ((x1 + x2) / 2 - W / 2) / (W / 2)      # -1 (left) .. +1 (right)
-    height_ratio = (y2 - y1) / H                    # bigger = closer
-    fwd = 0.0 if height_ratio > TARGET_H - DEADBAND else K_FWD * (TARGET_H - height_ratio)
-    turn = K_TURN * err_x if abs(err_x) > CENTER_DEADBAND else 0.0
-    return shape_speed(fwd + turn), shape_speed(fwd - turn)
+def change_state(old, new, reason):
+    """The only way the state changes: checks TRANSITIONS, logs it, and is the hook for the status LED/buzzer.
+    An illegal change is still applied (so the other variables stay consistent) but logged as ERROR."""
+    if new == old:
+        return old
+    if not transition_allowed(old, new):
+        log.error(f"[STATE] ILLEGAL {old} -> {new} ({reason}) - bug, please report the log")
+    log.info(f"[STATE] {old} -> {new} ({reason})")
+    return new
 
 
 class Motors:
-    """Sends 'M,<left>,<right>\\n' to the Arduino. Without a port it only prints/overlays."""
+    """Sends 'M,<left>,<right>\\n' to the Arduino and reads its 'D,<cm>' sonar lines.
+    Without a port it only prints/overlays."""
 
     def __init__(self, port):
         self.ser = None
+        self.rx = ""                     # unfinished received line
+        self.us_cm, self.us_time = None, 0.0
         if port:
             import serial
             self.ser = serial.Serial(port, 115200, timeout=0)
@@ -124,6 +98,19 @@ class Motors:
     def send(self, left, right):
         if self.ser:
             self.ser.write(f"M,{left},{right}\n".encode())
+
+    def read_distance(self):
+        """Latest front sonar distance in cm, or None (no port, or no reading for SONAR_MAX_AGE).
+        Call every frame so the receive buffer never fills up."""
+        if not self.ser:
+            return None
+        waiting = self.ser.in_waiting
+        if waiting:
+            cm, self.rx = parse_distance(self.rx + self.ser.read(waiting).decode(errors="ignore"))
+            self.rx = self.rx[-32:]      # junk without newlines must not grow forever
+            if cm is not None:
+                self.us_cm, self.us_time = cm, time.time()
+        return self.us_cm if time.time() - self.us_time <= SONAR_MAX_AGE else None
 
     def close(self):
         self.send(0, 0)
@@ -147,7 +134,8 @@ def draw_text(img, text, x, y, scale, colour, bg=(0, 0, 0), thick=2):
     return h
 
 
-def draw_overlay(frame, people, owner_id, state, left, right, fps, hint):
+def draw_overlay(frame, people, owner_id, state, left, right, fps, hint, banner=None):
+    """`banner` = (text, BGR background) shown big at the bottom, or None."""
     H, W = frame.shape[:2]
     s = UI_SCALE * W / 900               # text grows with the camera resolution
     t = max(2, int(round(2 * s)))
@@ -184,12 +172,12 @@ def draw_overlay(frame, people, owner_id, state, left, right, fps, hint):
         draw_text(frame, tag, max(0, x1), ty, scale, (0, 0, 0) if is_owner else (255, 255, 255),
                   bg=(0, 230, 0) if is_owner else (170, 170, 170), thick=t)
 
-    # Big warning when the owner is lost
-    if state == "LOST":
-        msg = "OWNER LOST - STOPPED"
+    # Big warning at the bottom (owner lost / searching / not found)
+    if banner:
+        msg, bg = banner
         w, h, _, _ = text_size(msg, 1.6 * s, t + 2)
         draw_text(frame, msg, max(0, (W - w) // 2), H - h - int(20 * s), 1.6 * s, (255, 255, 255),
-                  bg=(0, 0, 200), thick=t + 2)
+                  bg=bg, thick=t + 2)
 
 
 # ---------------------------------------------------------------- main loop
@@ -201,6 +189,8 @@ def main():
     ap.add_argument("--model", default="yolov8n-pose.pt")
     ap.add_argument("--imgsz", type=int, default=320, help="320 is fast; 640 is more accurate")
     ap.add_argument("--no-show", action="store_true", help="no video window (headless robot)")
+    ap.add_argument("--no-search", action="store_true",
+                    help="stop and wait instead of rotating to find a lost owner")
     args = ap.parse_args()
 
     setup_logging()
@@ -218,7 +208,7 @@ def main():
              f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}")
     motors = Motors(args.port)
 
-    state = "IDLE"            # IDLE -> FOLLOW <-> LOST -> (unlock) IDLE
+    state = "IDLE"            # see TRANSITIONS in control.py; change it only with change_state()
     owner_id, owner_hist = None, None
     lock_start = {}           # track id -> time one hand went up
     unlock_start = None
@@ -226,7 +216,14 @@ def main():
     cooldown_until = 0.0
     seen_ids = set()
     fps, prev_t, last_log = 0.0, time.time(), 0.0
-    owner_ratio, reid_best = None, None
+    fs = FollowState()
+    outran = False            # owner outran the robot: stay stopped until they are back within OUTRUN_DIST
+    reid_best = None
+    last_sonar_warn = 0.0
+    search = None             # Search scan while the owner is lost
+    candidate = (None, 0)     # (track id, consecutive frames) of a possible owner during SEARCH
+    last_err = 0.0            # owner's last horizontal offset: which way to search first
+    not_found_until = 0.0     # show "OWNER NOT FOUND" until this time
     frames = 0
 
     log.info("[IDLE] waiting: raise ONE hand above your head to lock")
@@ -243,6 +240,7 @@ def main():
             if dt > 0:
                 fps = 1 / dt if fps == 0 else 0.9 * fps + 0.1 / dt
             frames += 1
+            us = motors.read_distance()
 
             res = model.track(frame, persist=True, tracker="botsort.yaml",
                               classes=[0], imgsz=args.imgsz, verbose=False)[0]
@@ -273,7 +271,8 @@ def main():
                                 if hist is None:      # box unusable this frame, try again next frame
                                     continue
                                 owner_id, owner_hist = pid, hist
-                                state, last_seen = "FOLLOW", now
+                                state, last_seen = change_state(state, "FOLLOW", f"lock id {pid}"), now
+                                fs, outran = FollowState(), False
                                 lock_start.clear()
                                 log.info(f"[LOCK] owner = id {pid}  -> FOLLOW")
                                 break
@@ -290,28 +289,68 @@ def main():
                             hint = "Raise ONE hand above your head to lock"
                 else:
                     hint = f"Cooldown {cooldown_until - now:.1f}s"
+            elif state == "SEARCH":
+                # Only in-place rotation here: the owner is not visible, so never drive forward or back.
+                owner = next((p for p in people if p[0] == owner_id), None)
+                hold = False
+                if owner is not None:
+                    log.info(f"[FOUND] owner id {owner_id} after {search.progress()} deg -> FOLLOW")
+                    state = change_state(state, "FOLLOW",
+                                         f"owner id {owner_id} back after {search.progress()} deg")
+                    last_seen = now
+                else:
+                    best, reid_best = best_match(frame, people, owner_hist)
+                    if best is not None and reid_best >= REID_THRESH:
+                        n = candidate[1] + 1 if candidate[0] == best[0] else 1
+                        candidate, hold = (best[0], n), True    # stand still while confirming
+                        if n >= SEARCH_CONFIRM:
+                            log.info(f"[RE-LOCK] owner id {owner_id} -> id {best[0]} during search "
+                                     f"(clothing match {reid_best:.2f} for {n} frames)")
+                            state = change_state(state, "FOLLOW", f"clothing match id {best[0]}")
+                            owner_id, last_seen = best[0], now
+                    else:
+                        candidate = (None, 0)
+                if state == "SEARCH":
+                    turn, done = search.step(now, hold)
+                    left, right = mix(0, turn)
+                    hint = f"Searching... {search.progress()}/360 deg"
+                    if reid_best is not None:
+                        hint += f"  (best match {reid_best:.2f}, need {REID_THRESH})"
+                    if done:
+                        log.warning(f"[SEARCH] 360 deg scanned, owner not found -> IDLE "
+                                    f"(cooldown {COOLDOWN:.1f}s)")
+                        state = change_state(state, "IDLE", "360 deg scanned, not found")
+                        owner_id, owner_hist, outran = None, None, False
+                        cooldown_until, not_found_until = now + COOLDOWN, now + NOT_FOUND_SHOW
+                        left = right = 0
+                if state != "SEARCH":
+                    search, candidate, reid_best = None, (None, 0), None
             else:
                 owner = next((p for p in people if p[0] == owner_id), None)
 
                 # Owner's track ID disappeared: try to recognise them by clothing colour.
                 if owner is None and owner_hist is not None:
-                    best, best_score = None, 0.0
-                    for p in people:
-                        h = torso_hist(frame, p[1])
-                        if h is not None:
-                            s = cv2.compareHist(owner_hist, h, cv2.HISTCMP_CORREL)
-                            if s > best_score:
-                                best, best_score = p, s
-                    reid_best = best_score if best is not None else None
-                    if best is not None and best_score >= REID_THRESH:
+                    best, reid_best = best_match(frame, people, owner_hist)
+                    if best is not None and reid_best >= REID_THRESH:
                         log.info(f"[RE-LOCK] owner id {owner_id} -> id {best[0]} "
-                                 f"(clothing match {best_score:.2f} >= {REID_THRESH})")
+                                 f"(clothing match {reid_best:.2f} >= {REID_THRESH})")
                         owner, owner_id = best, best[0]
+                        fs = FollowState()
 
                 if owner is None:
-                    owner_ratio = None
-                    if state == "FOLLOW" and now - last_seen > LOST_STOP:
-                        state = "LOST"           # motors stay at 0: never follow a stranger
+                    fs.fwd, fs.backing = 0.0, False
+                    gone = now - last_seen > LOST_STOP
+                    if gone and not args.no_search and (state == "FOLLOW" or outran):
+                        direction = 1 if last_err >= 0 else -1
+                        reason = "outran owner left view" if outran else f"owner not seen for {LOST_STOP}s"
+                        state = change_state(state, "SEARCH", reason)
+                        search, candidate = Search(direction, now), (None, 0)
+                        fs = FollowState()
+                        log.warning(f"[SEARCH] owner id {owner_id} not seen for {LOST_STOP}s -> scanning, "
+                                    f"turning {'right' if direction > 0 else 'left'} first")
+                    elif gone and state == "FOLLOW":
+                        state = change_state(state, "LOST", "owner lost, --no-search")  # motors stay at 0
+                        fs = FollowState()
                         log.warning(f"[LOST] owner id {owner_id} not seen for {LOST_STOP}s "
                                     f"-> motors stopped")
                     hint = f"Owner not seen for {now - last_seen:.1f}s"
@@ -319,15 +358,31 @@ def main():
                         hint += f"  (best match {reid_best:.2f}, need {REID_THRESH})"
                 else:
                     pid, box, k = owner
-                    if state == "LOST":
+                    last_err = centre_error(box, W)
+                    raw = torso_ratio(k, H)
+                    if raw is not None:
+                        fs.size_s = raw if fs.size_s is None else (1 - SIZE_SMOOTH) * fs.size_s + SIZE_SMOOTH * raw
+                        fs.dist_hist.append((now, est_distance(fs.size_s)))
+                        while now - fs.dist_hist[0][0] > VEL_WINDOW:
+                            fs.dist_hist.popleft()
+                    else:
+                        fs.dist_hist.clear()     # a window with a hole would give a fake speed
+                    size = fs.size_s if raw is not None else None   # torso hidden this frame -> steer only
+                    gap = est_distance(size)
+
+                    if outran and gap is not None and gap < OUTRUN_DIST:
+                        outran = False
+                        log.info(f"[FOUND] owner back within {OUTRUN_DIST} m after outrun -> FOLLOW")
+                    elif state == "LOST" and not outran:
                         log.info(f"[FOUND] owner id {pid} back after {now - last_seen:.1f}s -> FOLLOW")
-                    last_seen, state, reid_best = now, "FOLLOW", None
-                    owner_ratio = (box[3] - box[1]) / H
+                    last_seen, reid_best = now, None
+                    state = change_state(state, "LOST" if outran else "FOLLOW", "owner visible")
                     h = torso_hist(frame, box)
                     if h is not None:            # adapt slowly to lighting changes
                         owner_hist = cv2.addWeighted(owner_hist, 0.95, h, 0.05, 0)
 
                     if hands_up(k) == 2:         # unlock gesture: pause while held
+                        fs.driving, fs.fwd, fs.backing = False, 0.0, False
                         if unlock_start is None:
                             unlock_start = now
                             log.info(f"[GESTURE] both hands up, hold {UNLOCK_HOLD:.1f}s to unlock "
@@ -337,28 +392,82 @@ def main():
                         if now - unlock_start >= UNLOCK_HOLD:
                             log.info(f"[UNLOCK] owner id {owner_id} released -> IDLE "
                                      f"(cooldown {COOLDOWN:.1f}s)")
-                            state, owner_id, owner_hist = "IDLE", None, None
+                            state = change_state(state, "IDLE", f"unlock by id {owner_id}")
+                            owner_id, owner_hist = None, None
                             unlock_start, cooldown_until = None, now + COOLDOWN
-                            owner_ratio = None
+                            fs, outran = FollowState(), False
                     else:
                         if unlock_start is not None:
                             log.info("[GESTURE] hands down, unlock cancelled")
                         unlock_start = None
-                        left, right = follow_command(box, W, H)
-                        hint = f"Size {owner_ratio:.2f} / target {TARGET_H:.2f}   both hands up = unlock"
+                        if outran:
+                            hint = f"Too fast for me - come back within {OUTRUN_DIST} m"
+                        else:
+                            fs.v_owner = owner_speed(gap_rate(fs.dist_hist), fs.fwd)
+                            fwd_target, turn, fs.driving = follow_command(box, W, size, fs.driving, fs.v_owner)
+                            centred = abs(centre_error(box, W)) < BACKOFF_CENTER
+                            if us is not None and centred and us < TARGET_DIST * 100:
+                                fwd_target, fs.driving = 0.0, False      # sonar stop
+                            was_backing = fs.backing
+                            if update_backoff(fs, us, centred, gap, now):
+                                fs.fwd = -BACKOFF_SPEED              # not ramped; owner_speed() sees the robot moving back
+                                if not was_backing:
+                                    log.info(f"[BACKOFF] owner at {us} cm -> reversing")
+                            else:
+                                fs.fwd = ramp_fwd(fs.fwd, fwd_target, dt)
+                                if was_backing and fs.backoff_wait:
+                                    log.warning("[BACKOFF] time limit, waiting for owner to step back")
+                                elif was_backing:
+                                    log.info(f"[BACKOFF] done at {us if us is not None else '-'} cm")
+                                elif (us is not None and us < MIN_DIST_CM and centred and gap is not None
+                                      and gap >= TARGET_DIST and now - last_sonar_warn >= LOG_EVERY):
+                                    last_sonar_warn = now
+                                    log.warning(f"[SONAR] obstacle at {us} cm but camera says owner "
+                                                f"~{gap:.1f} m -> stop, no reverse")
+                            left, right = mix(fs.fwd, turn)
+                            if fs.backing:
+                                hint = f"Too close ({us} cm) - backing off"
+                            elif size is not None:
+                                hint = (f"Torso {size:.2f} / {TARGET_TORSO:.2f}  ~{gap:.1f} m"
+                                        f"   both hands up = unlock")
+                                if fs.v_owner is not None:
+                                    hint += f"  owner {fs.v_owner:+.1f} m/s"
+                            else:
+                                hint = "Torso not visible - steering only"
+
+                            if fs.fwd >= 0.9 * MAX_SPEED and gap is not None and gap > OUTRUN_DIST:
+                                if fs.outrun_since is None:
+                                    fs.outrun_since = now
+                                if now - fs.outrun_since >= OUTRUN_TIME:
+                                    state = change_state(state, on_outrun(gap), f"outrun, gap ~{gap:.1f} m")
+                                    outran = True
+                                    fs = FollowState()
+                                    left = right = 0
+                            else:
+                                fs.outrun_since = None
 
             motors.send(left, right)
-
             if now - last_log >= LOG_EVERY:
                 last_log = now
                 ids = [p[0] for p in people]
-                size = f"{owner_ratio:.2f}" if owner_ratio is not None else "-"
+                torso = f"{fs.size_s:.3f}" if fs.size_s is not None else "-"
+                dist = f"{est_distance(fs.size_s):.2f}" if fs.size_s is not None else "-"
+                ov = f"{fs.v_owner:+.2f}" if fs.v_owner is not None else "-"
                 log.info(f"[STATUS] {state:<6} owner={owner_id if owner_id is not None else '-'} "
                          f"people={len(ids)} {ids} L={left:+4d} R={right:+4d} "
-                         f"size={size}/{TARGET_H:.2f} fps={fps:.1f}")
+                         f"torso={torso}/{TARGET_TORSO:.2f} dist~{dist}m drive={fs.driving} "
+                         f"ov={ov} fwd={fs.fwd:.0f} us={us if us is not None else '-'} "
+                         f"search={f'{search.progress()}/360' if search else '-'} fps={fps:.1f}")
 
             if not args.no_show:
-                draw_overlay(frame, people, owner_id, state, left, right, fps, hint)
+                banner = None
+                if state == "LOST":
+                    banner = ("OWNER LOST - STOPPED", (0, 0, 200))
+                elif state == "SEARCH":
+                    banner = ("SEARCHING FOR OWNER", (0, 120, 220))
+                elif state == "IDLE" and now < not_found_until:
+                    banner = ("OWNER NOT FOUND", (0, 0, 200))
+                draw_overlay(frame, people, owner_id, state, left, right, fps, hint, banner)
                 cv2.imshow("Owner Follower", frame)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     log.info("[QUIT] q pressed")
