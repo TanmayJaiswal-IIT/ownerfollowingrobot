@@ -9,12 +9,15 @@ Keep the WHEELS OFF THE GROUND for every test.
 
 Commands are re-sent 20 times a second, like follower.py does, so the Arduino's
 500 ms watchdog does not stop the motors in the middle of a test.
+The Arduino's "D,<cm>" distance lines are ignored, except in test 10.
 """
 import argparse
 import time
 
 import serial
 from serial.tools import list_ports
+
+from control import SEARCH_SPEED, parse_distance
 
 RATE_HZ = 20     # how often commands are re-sent
 STEP_S = 2.0     # s each simple test runs
@@ -24,9 +27,21 @@ def run(ser, left, right, seconds):
     """Send M,left,right repeatedly for `seconds`, then stop."""
     end = time.time() + seconds
     while time.time() < end:
+        ser.reset_input_buffer()             # discard the Arduino's D,<cm> lines
         ser.write(f"M,{left},{right}\n".encode())
         time.sleep(1 / RATE_HZ)
     ser.write(b"M,0,0\n")
+
+
+def sonar_readout(ser, seconds=10.0):
+    """Print the latest ultrasonic distance 5 times a second, motors stopped."""
+    ser.reset_input_buffer()
+    buf, end = "", time.time() + seconds
+    while time.time() < end:
+        ser.write(b"M,0,0\n")
+        cm, buf = parse_distance(buf + ser.read(ser.in_waiting).decode(errors="ignore"))
+        print(f"   {cm} cm" if cm is not None else "   no reading (old firmware or sensor wiring?)")
+        time.sleep(0.2)
 
 
 def main():
@@ -53,6 +68,11 @@ def main():
         "7": ("Speed sweep 40..255: note the value where BOTH sides start turning -> MIN_SPEED", None),
         "8": ("Watchdog: forward 1 s, then Python goes silent -> wheels must stop within 0.5 s", None),
         "9": ("Obstacle: forward for 10 s, put your hand < 20 cm in front of the sensor", None),
+        "10": ("Ultrasonic readout for 10 s (motors stopped): compare with a tape measure",
+               lambda ser: sonar_readout(ser)),
+        "11": (f"Search spin calibration (ON THE FLOOR): spin right at SEARCH_SPEED={SEARCH_SPEED} for 4 s",
+               lambda ser: (run(ser, SEARCH_SPEED, -SEARCH_SPEED, 4.0),
+                            print("   Measure the angle turned. SPIN_DEG_PER_S = angle / 4 (set it in control.py)"))),
     }
 
     print(f"Opening {args.port} ...")

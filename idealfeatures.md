@@ -38,24 +38,24 @@ Track the owner's wrist for about 1.5 s; summed angle around its centre > ±300�
 ## Tanmay Jaiswal: Motion control and behaviour
 
 **6. Safe-distance follow (1 m gap)** 🟡
-Distance is estimated from the owner's box height vs `TARGET_H` (calibrated at 1 m); the robot drives until that gap is reached.
+Distance is estimated from the owner's shoulder-to-hip length vs `TARGET_TORSO` (calibrated at `TARGET_DIST`); the robot drives until that gap is reached.
 *Defend:* No depth sensor needed; accuracy is about ±20–30 % and is calibrated per camera and owner.
 
-**7. Dynamic speed** 🔲
-Speed = distance error term + owner-speed term (how fast the box is shrinking). Walk faster → robot speeds up; still stops at 1 m. Speed changes are ramped to avoid jerks.
-*Defend:* Limit: BO motors top out below a brisk walk, so speed is capped at `MAX_SPEED`; if the owner outruns it, the robot goes to Owner search.
+**7. Dynamic speed** 🟡
+Speed = distance error term + owner-speed term. The camera only sees the relative speed (how fast the estimated gap grows over 0.5 s), so the robot's own speed (last PWM × `ROBOT_TOP_SPEED`) is added back to get the owner's walking speed. Walk faster → robot speeds up; still stops at `TARGET_DIST` (same stop rule as feature 6). Speed rises at most `RAMP_UP` PWM/s; stops are always instant. Calibration and tests: `plans/speed_plan.md`.
+*Defend:* Limit: BO motors top out below a brisk walk (measured `ROBOT_TOP_SPEED` = ___ m/s), so speed is capped at `MAX_SPEED`. If the owner stays more than 2.5 m away at full speed for 1.5 s, the robot logs `[OUTRUN]` and stops; if the owner then leaves view, it starts Owner search.
 
 **8. Steering and minimum distance** 🟡
-Turns to keep the owner centred (proportional control). If the owner comes closer than about 0.6 m, it backs off slowly.
-*Defend:* Deadbands stop wobbling when the owner is almost centred or almost at 1 m.
+Turns to keep the owner centred (proportional control). Up close the camera can't see the hips, so the Arduino's front ultrasonic reports the distance (`D,<cm>`). If the centred owner is closer than 60 cm, the robot backs off slowly until 75 cm. Tests: `plans/distance_plan.md` Phase 7.
+*Defend:* Deadbands stop wobbling when the owner is almost centred or almost at 1 m. Reversing is blind (no rear sensor), so it is slow, at most 2 s, and only with the owner centred and the camera agreeing; if the camera says the owner is far, the sonar is seeing an obstacle, so the robot stops instead.
 
-**9. Owner search (360° scan)** 🔲
-Owner lost > 0.3 s → stop, then rotate slowly in place, first towards the side the owner was last seen. Owner found (ID or clothing match) → FOLLOW. Full 360° with no match → stop, signal LOST, go IDLE.
-*Defend:* Safe because it only rotates in place at low speed, never drives forward without the owner, and the obstacle and watchdog rules still apply.
+**9. Owner search (360° scan)** 🟡
+Owner lost > 0.3 s → stop, then rotate in place in "stop-and-look" steps (turn 30°, stand still 0.7 s so detection sees sharp frames), first towards the side the owner was last seen. Owner found (original ID, or a clothing match held for 3 frames while the robot stands still) → FOLLOW. Full 360° with no match → stop, "OWNER NOT FOUND", go IDLE. `--no-search` keeps the old stop-and-wait. Tests: `plans/search_plan.md`.
+*Defend:* Safe because it only rotates in place at low speed, never drives forward or backward without the owner, and the obstacle and watchdog rules still apply. Limit: no encoders, so the angle is time-based (`SPIN_DEG_PER_S`, calibrated per floor); the confirm frames lower the risk of re-locking on a stranger in similar clothes.
 
 **10. State machine, display and logs** 🟡
-IDLE → FOLLOW ↔ SEARCH → IDLE. Large on-screen state and motor values; every event logged to `follower.log`.
-*Defend:* One clear state at a time makes behaviour predictable and easy to debug from the log.
+IDLE → FOLLOW ↔ SEARCH → IDLE, plus LOST (stopped after an outrun, or with `--no-search`). The allowed changes are one table (`TRANSITIONS` in `control.py`); every change goes through `change_state()` and is logged as `[STATE] old -> new (reason)`. Large on-screen state and motor values; every event logged to `follower.log`. Offline tests T35–T37 check the table.
+*Defend:* One clear state at a time makes behaviour predictable and easy to debug from the log (grep `[STATE]` for the timeline). Illegal changes are logged as ERROR, and tests prove every state can be reached and can always return to IDLE.
 
 ---
 

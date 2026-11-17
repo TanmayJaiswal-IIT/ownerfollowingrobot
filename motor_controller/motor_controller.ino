@@ -1,5 +1,6 @@
 // DesiPachinos owner-following robot: Arduino Uno motor controller
 // Receives "M,<left>,<right>\n" (-255..255) over USB serial at 115200 baud.
+// Sends "D,<cm>\n" (ultrasonic distance, 999 = no echo) to the Pi after every ping (~16 Hz).
 // Safety on the Arduino itself:
 //   - stops if no command arrives for 500 ms (Python crashed / cable pulled)
 //   - blocks forward motion if the ultrasonic sensor sees an obstacle under 20 cm
@@ -60,7 +61,12 @@ void loop() {
     else if (buf.length() < 32) buf += c;
   }
 
-  if (millis() - lastPing > 60) { distCm = readDistanceCm(); lastPing = millis(); }
+  if (millis() - lastPing > 60) {
+    distCm = readDistanceCm();
+    lastPing = millis();
+    // only if there is room: a full TX buffer must never stall motor control or the watchdog
+    if (Serial.availableForWrite() >= 8) { Serial.print("D,"); Serial.println(distCm); }
+  }
 
   int l = cmdL, r = cmdR;
   if (millis() - lastCmd > WATCHDOG_MS) { l = 0; r = 0; }        // watchdog
