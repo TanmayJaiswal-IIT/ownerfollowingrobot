@@ -66,20 +66,76 @@ camera -> follower.py (Pi/Mac)                      -> USB serial ->  motor_cont
 | Spin Mode | track owner wrist ~1.5 s; summed angle around its centroid > ±300° -> spin CW/CCW; only when stopped and no obstacle. Fallback: arms in an "O" above head | **next** |
 
 ## Roadmap
-1. Mac webcam test: verify lock/unlock/re-lock, watch `L=`/`R=` overlay, tune constants.
+1. ~~Mac webcam test~~ — skipped; using Pi over SSH from the start.
 2. Wire Arduino + L298N, upload sketch, test with wheels off the ground.
-3. Tethered test (Mac -> Arduino), then move to Pi (`--no-show --imgsz 320`).
-4. Add Spin Mode as a new state in `follower.py`.
-5. Demo rehearsal in the real room (even lighting, 2-3 people max).
+3. Live lock/unlock/re-lock test on Pi via SSH (`--stream` feed on laptop browser).
+4. Tune constants (`TARGET_TORSO`, `MAX_SPEED`, etc.) with battery connected.
+5. Add Spin Mode as a new state in `follower.py`.
+6. Demo rehearsal in the real room (even lighting, 2-3 people max).
 
 ## Run
+
+> All development and execution happens **on the Pi over SSH**.
+> Both laptop and Pi connect to the same WiFi (or hotspot). No Ethernet cable required.
+
+### 1 — SSH into the Pi
 ```bash
+# From laptop terminal on same WiFi
+ssh pi@pi.local
+# password: password
+# (Fallback if mDNS is disabled on router: ssh pi@<pi-ip-from-hotspot/router>)
+```
+
+### 2 — Activate the environment (every session)
+```bash
+cd /home/pi/ownerfollowingrobot
+source .venv/bin/activate
+```
+
+### 3 — Run the follower
+```bash
+# Headless + live browser stream (standard demo mode)
+libcamerify .venv/bin/python3 follower.py \
+    --port /dev/ttyACM0 \
+    --imgsz 320 \
+    --no-show \
+    --stream
+
+# Then open on your laptop browser:
+#   http://pi.local:8080             ← full-screen live feed + FPS overlay
+#   http://pi.local:8080/stream.mjpg ← raw MJPEG (VLC, ffplay, etc.)
+```
+
+### 4 — Other useful commands (run on Pi over SSH)
+```bash
+# Motor + ultrasonic bench test (no camera needed)
+libcamerify .venv/bin/python3 motor_test.py --port /dev/ttyACM0
+
+# Offline unit tests (no camera, no Arduino)
+.venv/bin/python3 test_follow.py
+
+# Reflash Arduino firmware
+~/.local/bin/arduino-cli compile --fqbn arduino:avr:uno motor_controller/
+~/.local/bin/arduino-cli upload  --fqbn arduino:avr:uno -p /dev/ttyACM0 motor_controller/
+```
+
+### CLI flags
+| Flag | Default | Description |
+|---|---|---|
+| `--port` | *(none)* | Arduino serial port — `/dev/ttyACM0` on Pi |
+| `--imgsz` | 640 | YOLO inference size; use `320` on Pi for best FPS |
+| `--model` | auto | Model path; auto-detects `yolov8n-pose_ncnn_model/` if present |
+| `--no-show` | off | Skip OpenCV display window (required over SSH) |
+| `--stream [PORT]` | 8080 | Start MJPEG HTTP server; watch in laptop browser |
+| `--no-search` | off | Disable rotation search; robot waits in place when owner lost |
+
+### One-time setup (already done on our Pi — keep for reference)
+```bash
+cd /home/pi/ownerfollowingrobot
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python follower.py                                   # laptop test, no robot
-python follower.py --port /dev/cu.usbmodemXXXX       # Mac + Arduino
-python motor_test.py --port /dev/cu.usbmodemXXXX     # motor/safety bench test, wheels off ground
-python follower.py --port /dev/ttyACM0 --no-show     # Raspberry Pi
+# NCNN export (~2 min, once) — auto-detected at runtime after this
+python3 -c "from ultralytics import YOLO; YOLO('yolov8n-pose.pt').export(format='ncnn', imgsz=320)"
 ```
 
 ## Conventions for changes
