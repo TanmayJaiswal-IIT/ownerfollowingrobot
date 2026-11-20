@@ -42,7 +42,8 @@ BACKOFF_ENABLED = False  # reverse away from a too-close owner; OFF: low sonar s
 FORWARD_ONLY = True      # while following, no wheel ever turns backwards (turn = one side forward, other stopped)
 TURN_MIN = 90            # PWM, minimum for the one moving side when turning on the spot (one side must drag the other)
 STOP_BEFORE_TURN = 1.0   # s fully stopped before a calm turn towards an off-centre owner may start
-TURN_STEP = 0.25         # s of turning per calm-turn step (short nudge)
+TURN_START_ERR = 0.40    # start a calm turn only when the owner is this far off-centre (-1..1); stop at PIVOT_ERR
+TURN_STEP_MIN, TURN_STEP_MAX = 0.06, 0.15   # s per nudge, scaled by how far off-centre the owner is (no overshoot)
 TURN_LOOK = 0.7          # s standing still after each nudge to look again (sharp frames, no overshoot)
 REVERSE_MARGIN = 0.15    # --straight-only: reverse when the owner looks this much bigger than the target (15 %)
 REVERSE_SPEED = 75       # PWM, --straight-only slow reverse (just above MIN_SPEED)
@@ -232,12 +233,13 @@ def update_backoff(fs, us_cm, centred, cam_dist, now):
 
 class CalmTurn:
     """Turn towards an owner who is clearly to one side, but only after the robot has been fully stopped for
-    STOP_BEFORE_TURN s, and only in short nudges (TURN_STEP s turning, TURN_LOOK s still), never while driving."""
+    STOP_BEFORE_TURN s, and only in short nudges (TURN_STEP_MIN..MAX s turning, TURN_LOOK s still), never while driving."""
 
     def __init__(self):
         self.stopped_since = None
         self.phase, self.phase_start = "look", 0.0
         self.last = None
+        self.dur = TURN_STEP_MIN    # length of the current nudge
 
     def step(self, now, moving, err_x):
         """Returns the turn value (+ = right, - = left, 0 = none) for this frame."""
@@ -250,11 +252,14 @@ class CalmTurn:
         if self.stopped_since is None:
             self.stopped_since, self.phase, self.phase_start = now, "look", now
         if abs(err_x) <= PIVOT_ERR or now - self.stopped_since < STOP_BEFORE_TURN:
+            if self.phase == "turn":
+                self.phase_start = now               # owner centred mid-nudge: stop and look from now
             self.phase = "look"
             return 0.0
-        if self.phase == "look" and now - self.phase_start >= TURN_LOOK:
+        if self.phase == "look" and now - self.phase_start >= TURN_LOOK and abs(err_x) > TURN_START_ERR:
             self.phase, self.phase_start = "turn", now
-        elif self.phase == "turn" and now - self.phase_start >= TURN_STEP:
+            self.dur = max(TURN_STEP_MIN, min(TURN_STEP_MAX, TURN_STEP_MAX * abs(err_x)))
+        elif self.phase == "turn" and now - self.phase_start >= self.dur:
             self.phase, self.phase_start = "look", now
         return (TURN_MIN if err_x > 0 else -TURN_MIN) if self.phase == "turn" else 0.0
 

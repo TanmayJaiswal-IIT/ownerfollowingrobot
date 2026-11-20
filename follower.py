@@ -45,6 +45,7 @@ LOST_STOP = 0.3          # s owner missing before the robot stops
 SEARCH_DELAY = 2.0       # s owner missing (robot stopped, waiting) before the 360 deg search starts
 REID_THRESH = 0.75       # clothing-colour similarity needed to re-lock (0..1)
 NOT_FOUND_SHOW = 3.0     # s the "OWNER NOT FOUND" banner stays up after a failed search
+OWNER_TIMEOUT = 10.0     # s owner not seen -> forget them, go IDLE: anyone can lock as the new owner
 # Search speed, step and timing live in control.py.
 # Distance, steering and speed tuning lives in control.py.
 
@@ -556,7 +557,15 @@ def main():
                         fs = FollowState()
                         log.warning(f"[LOST] owner id {owner_id} not seen for {LOST_STOP}s "
                                     f"-> motors stopped")
-                    hint = f"Owner not seen for {now - last_seen:.1f}s"
+                    if now - last_seen > OWNER_TIMEOUT and state in ("FOLLOW", "LOST"):
+                        log.warning(f"[TIMEOUT] owner id {owner_id} not seen for {OWNER_TIMEOUT:.0f}s -> IDLE, "
+                                    f"raise ONE hand to lock a new owner")
+                        state = change_state(state, "IDLE", f"owner lost for {OWNER_TIMEOUT:.0f}s")
+                        owner_id, owner_hist, outran = None, None, False
+                        fs, unlock_start, reid_best = FollowState(), None, None
+                        lock_start.clear()
+                        not_found_until = now + NOT_FOUND_SHOW
+                    hint = f"Owner not seen for {now - last_seen:.1f}s (new owner after {OWNER_TIMEOUT:.0f}s)"
                     if reid_best is not None:
                         hint += f"  (best match {reid_best:.2f}, need {REID_THRESH})"
                 else:

@@ -272,7 +272,7 @@ check("T63 straight-only output is equal both sides", mix(-75, 0)[0] == mix(-75,
       and mix(90, 0)[0] == mix(90, 0)[1] == 90)
 
 # ---- calm turn: only after a full stop, short nudges ----
-from control import STOP_BEFORE_TURN, TURN_LOOK, TURN_STEP, CalmTurn
+from control import STOP_BEFORE_TURN, TURN_LOOK, TURN_STEP_MAX, CalmTurn
 c = CalmTurn()
 check("T64 driving -> never turns", c.step(0.0, True, 0.8) == 0)
 c = CalmTurn()
@@ -282,7 +282,7 @@ while t < STOP_BEFORE_TURN - 0.05:
     t += 0.05
 check("T65 no turn during the first second of a stop", True)
 turns = []
-while t < STOP_BEFORE_TURN + TURN_LOOK + TURN_STEP + TURN_LOOK + 0.3:
+while t < STOP_BEFORE_TURN + TURN_LOOK + TURN_STEP_MAX + TURN_LOOK + 0.3:
     turns.append(c.step(t, False, 0.8))
     t += 0.05
 check("T66 then nudges towards the owner (right), with still phases",
@@ -292,5 +292,14 @@ c = CalmTurn()
 for i in range(60):
     c.step(i * 0.05, False, -0.8)
 check("T68 owner left -> turns left", any(c.step(3.0 + i * 0.05, False, -0.8) < 0 for i in range(30)))
+
+c = CalmTurn()
+t, turning = 0.0, 0
+while t < 6.0:
+    turning += c.step(t, False, 1.0) != 0
+    t += 0.01
+check("T69 nudges are short (<= TURN_STEP_MAX each, mostly still)", turning * 0.01 <= 6.0 * TURN_STEP_MAX / TURN_LOOK)
+check("T70 owner only slightly off (0.35) -> no new nudge", not any(CalmTurn().step(i * 0.05, False, 0.35)
+                                                                     for i in range(100)))
 
 print("All tests passed.")
