@@ -41,6 +41,9 @@ BACKOFF_CENTER = 0.25    # |err_x| below this counts as "owner in front of the s
 BACKOFF_ENABLED = False  # reverse away from a too-close owner; OFF: low sonar saw the floor and drove backwards
 FORWARD_ONLY = True      # while following, no wheel ever turns backwards (turn = one side forward, other stopped)
 TURN_MIN = 90            # PWM, minimum for the one moving side when turning on the spot (one side must drag the other)
+STOP_BEFORE_TURN = 1.0   # s fully stopped before a calm turn towards an off-centre owner may start
+TURN_STEP = 0.25         # s of turning per calm-turn step (short nudge)
+TURN_LOOK = 0.7          # s standing still after each nudge to look again (sharp frames, no overshoot)
 REVERSE_MARGIN = 0.15    # --straight-only: reverse when the owner looks this much bigger than the target (15 %)
 REVERSE_SPEED = 75       # PWM, --straight-only slow reverse (just above MIN_SPEED)
 REVERSE_MAX_TIME = 2.0   # s, longest reverse per episode (no rear sensor), then wait until the owner steps back
@@ -227,6 +230,35 @@ def update_backoff(fs, us_cm, centred, cam_dist, now):
     return False
 
 
+class CalmTurn:
+    """Turn towards an owner who is clearly to one side, but only after the robot has been fully stopped for
+    STOP_BEFORE_TURN s, and only in short nudges (TURN_STEP s turning, TURN_LOOK s still), never while driving."""
+
+    def __init__(self):
+        self.stopped_since = None
+        self.phase, self.phase_start = "look", 0.0
+        self.last = None
+
+    def step(self, now, moving, err_x):
+        """Returns the turn value (+ = right, - = left, 0 = none) for this frame."""
+        if self.last is None or now - self.last > 0.5:      # not called for a while (owner lost, unlock pause)
+            self.stopped_since = None
+        self.last = now
+        if moving:
+            self.stopped_since, self.phase = None, "look"
+            return 0.0
+        if self.stopped_since is None:
+            self.stopped_since, self.phase, self.phase_start = now, "look", now
+        if abs(err_x) <= PIVOT_ERR or now - self.stopped_since < STOP_BEFORE_TURN:
+            self.phase = "look"
+            return 0.0
+        if self.phase == "look" and now - self.phase_start >= TURN_LOOK:
+            self.phase, self.phase_start = "turn", now
+        elif self.phase == "turn" and now - self.phase_start >= TURN_STEP:
+            self.phase, self.phase_start = "look", now
+        return (TURN_MIN if err_x > 0 else -TURN_MIN) if self.phase == "turn" else 0.0
+
+
 def straight_reverse(fs, size, target, us_cm, now):
     """--straight-only: True while the robot should reverse slowly. Decided by the CAMERA (owner looks more than
     REVERSE_MARGIN bigger than the target); the sonar can only veto (it clearly sees nothing near, 999 = no echo
@@ -261,6 +293,7 @@ class FollowState:
         self.backoff_wait = False   # back-off time limit hit: wait until the owner steps back
         self.rev_since = None       # --straight-only: time the current reverse started
         self.rev_wait = False       # --straight-only: reverse time limit hit, wait until the owner steps back
+        self.calm = CalmTurn()      # calm turn towards an off-centre owner after a full stop
 
 
 class Search:

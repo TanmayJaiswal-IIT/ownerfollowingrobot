@@ -352,6 +352,9 @@ def main():
     ap.add_argument("--no-show", action="store_true", help="no video window (headless robot)")
     ap.add_argument("--stream", type=int, default=None, nargs="?", const=8080,
                     help="stream live annotated video over HTTP (default port: 8080)")
+    ap.add_argument("--turn", action="store_true",
+                    help="old steering: turn freely while following (default: straight driving, calm turn only "
+                         "after a full stop)")
     ap.add_argument("--straight-only", action="store_true",
                     help="hard mode: only forward / stop / slow reverse, never turn (L == R always, no search)")
     ap.add_argument("--search", action="store_true",
@@ -617,6 +620,8 @@ def main():
                             fwd_target, turn, fs.driving = follow_command(box, W, size, fs.driving, fs.v_owner,
                                                                           target)
                             fwd_target, turn = straight_or_turn(fwd_target, turn, centre_error(box, W))
+                            if not args.turn:            # default: no turning while driving; after a full stop of
+                                turn = fs.calm.step(now, fwd_target > 0, centre_error(box, W))   # 1 s: slow nudges
                             centred = abs(centre_error(box, W)) < BACKOFF_CENTER
                             # sonar stop: only when the camera agrees the owner is near (else it sees something
                             # else, e.g. the floor; the Arduino still stops for anything under 20 cm)
