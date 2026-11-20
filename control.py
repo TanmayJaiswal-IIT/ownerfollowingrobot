@@ -23,13 +23,13 @@ EDGE_FRAC = 0.02         # box within this fraction of the left/right frame edge
 BOX_SMOOTH = 0.3         # 0..1, weight of the newest frame in the smoothed box width
 K_FWD = 1000             # forward gain (torso sizes are about half of box sizes)
 K_TURN = 100             # turning gain (lower = gentler turns)
-MAX_SPEED = 120          # PWM limit (0..255); kept low so the robot moves calmly
+MAX_SPEED = 90           # PWM limit (0..255); kept low so the robot moves calmly
 MIN_SPEED = 70           # PWM below which the motors stall
 ROBOT_TOP_SPEED = 0.5    # m/s, robot ground speed at MAX_SPEED; measure it (plans/speed_plan.md step 1)!
 VEL_WINDOW = 0.5         # s of gap history used to estimate the owner's speed
 OWNER_MOVING = 0.15      # m/s, owner speeds below this count as standing still (noise)
 VEL_GAIN = 0.8           # 0..1, share of the owner's pace matched by the speed term (below 1 = no overshoot)
-RAMP_UP = 100            # PWM/s, max forward speed increase (MIN_SPEED -> MAX_SPEED in ~0.5 s, gentle start)
+RAMP_UP = 50             # PWM/s, max forward speed increase (MIN_SPEED -> MAX_SPEED in ~0.4 s, gentle start)
 RAMP_DOWN = 500          # PWM/s, max forward speed decrease while still driving (full stops are instant)
 OUTRUN_DIST = 2.5        # m, gap that counts as "owner got away"
 OUTRUN_TIME = 1.5        # s at near-full speed with gap > OUTRUN_DIST before giving up
@@ -46,7 +46,7 @@ TURN_START_ERR = 0.40    # start a calm turn only when the owner is this far off
 TURN_STEP_MIN, TURN_STEP_MAX = 0.06, 0.15   # s per nudge, scaled by how far off-centre the owner is (no overshoot)
 TURN_LOOK = 0.7          # s standing still after each nudge to look again (sharp frames, no overshoot)
 REVERSE_MARGIN = 0.15    # --straight-only: reverse when the owner looks this much bigger than the target (15 %)
-REVERSE_SPEED = 75       # PWM, --straight-only slow reverse (just above MIN_SPEED)
+REVERSE_SPEED = 70       # PWM, --straight-only slow reverse (just above MIN_SPEED)
 REVERSE_MAX_TIME = 2.0   # s, longest reverse per episode (no rear sensor), then wait until the owner steps back
 STRAIGHT_DRIVE = True    # driving: equal PWM both sides (straight); owner > PIVOT_ERR off-centre: stop, turn, then drive
 SONAR_MAX_AGE = 0.3      # s, older sonar readings are ignored
