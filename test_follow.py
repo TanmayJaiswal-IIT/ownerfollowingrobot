@@ -92,7 +92,7 @@ fwd, _, d = follow_command(CENTRED, W, TARGET_TORSO, True, 0.5)
 check("T16 still stops at target while owner walks", fwd == 0 and not d)
 
 first = ramp_fwd(0.0, 200, 0.1)
-check("T17 ramp up from stop", first == MIN_SPEED and close(ramp_fwd(first, 200, 0.1), MIN_SPEED + 25))
+check("T17 ramp up from stop", first == MIN_SPEED and close(ramp_fwd(first, 200, 0.1), MIN_SPEED + control.RAMP_UP * 0.1))
 
 check("T18 stop is instant", ramp_fwd(180, 0, 0.1) == 0)
 
@@ -214,7 +214,7 @@ check("T40 owner at lock distance -> stop", fwd == 0 and not d)
 check("T41 distance uses lock target", close(est_distance(0.275, 0.55), 2 * TARGET_DIST))
 fwd, turn, _ = follow_command(FAR_RIGHT, W, 0.40, False, None, target=0.55)
 L, R = mix(fwd, arc(fwd, turn))
-check("T42 owner off-centre while driving -> curve, no wheel reverses", L > R >= 0)
+check("T42 owner off-centre while driving -> curve, no wheel reverses (STRAIGHT_DRIVE off)", L > R >= 0)
 check("T43 not driving -> pivot still allowed", arc(0, 80) == 80)
 
 # ---- forward-only following (no wheel ever reverses) ----
@@ -236,11 +236,20 @@ _, turn, d = follow_command((W / 2 + 10, 100, W / 2 + 130, 400), W, 0.45, False,
 check("T50 stopped, owner slightly off-centre -> no spin", turn == 0 and not d)
 fwd, turn, d = follow_command((W / 2 + 10, 100, W / 2 + 130, 400), W, 0.20, False, None, target=0.40)
 L, R = forward_only(*mix(fwd, arc(fwd, turn)))
-check("T51 driving, owner slightly right -> curve right, both forward", L > R > 0)
+check("T51 driving, owner slightly right -> curve right, both forward (STRAIGHT_DRIVE off)", L > R > 0)
 
 from control import box_cut_off
 check("T52 box cut off at frame edge -> width not trusted", box_cut_off((0, 0, 300, 480), W)
       and box_cut_off((400, 0, W, 480), W) and not box_cut_off(CENTRED, W))
 check("T53 follow distance is short", TARGET_DIST <= 0.5)
+
+# ---- straight drive: equal PWM both sides ----
+from control import straight_or_turn
+f, tr = straight_or_turn(100, 30, 0.15)
+check("T54 driving, owner nearly ahead -> straight, equal PWM", f == 100 and tr == 0
+      and mix(f, tr)[0] == mix(f, tr)[1])
+f, tr = straight_or_turn(100, 60, 0.5)
+check("T55 owner clearly to one side -> stop, then turn", f == 0 and tr == 60)
+check("T56 stopped, small offset -> nothing", straight_or_turn(0, 0, 0.1) == (0, 0))
 
 print("All tests passed.")

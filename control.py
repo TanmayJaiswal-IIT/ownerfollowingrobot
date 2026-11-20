@@ -22,14 +22,14 @@ BOX_MIN, BOX_MAX = 0.08, 0.80   # sane range for the box width seen right after 
 EDGE_FRAC = 0.02         # box within this fraction of the left/right frame edge = cut off: width is not trusted
 BOX_SMOOTH = 0.3         # 0..1, weight of the newest frame in the smoothed box width
 K_FWD = 1000             # forward gain (torso sizes are about half of box sizes)
-K_TURN = 160             # turning gain
-MAX_SPEED = 200          # PWM limit (0..255)
+K_TURN = 100             # turning gain (lower = gentler turns)
+MAX_SPEED = 120          # PWM limit (0..255); kept low so the robot moves calmly
 MIN_SPEED = 70           # PWM below which the motors stall
 ROBOT_TOP_SPEED = 0.5    # m/s, robot ground speed at MAX_SPEED; measure it (plans/speed_plan.md step 1)!
 VEL_WINDOW = 0.5         # s of gap history used to estimate the owner's speed
 OWNER_MOVING = 0.15      # m/s, owner speeds below this count as standing still (noise)
 VEL_GAIN = 0.8           # 0..1, share of the owner's pace matched by the speed term (below 1 = no overshoot)
-RAMP_UP = 250            # PWM/s, max forward speed increase (MIN_SPEED -> 200 in ~0.5 s)
+RAMP_UP = 100            # PWM/s, max forward speed increase (MIN_SPEED -> MAX_SPEED in ~0.5 s, gentle start)
 RAMP_DOWN = 500          # PWM/s, max forward speed decrease while still driving (full stops are instant)
 OUTRUN_DIST = 2.5        # m, gap that counts as "owner got away"
 OUTRUN_TIME = 1.5        # s at near-full speed with gap > OUTRUN_DIST before giving up
@@ -40,7 +40,8 @@ BACKOFF_MAX_TIME = 2.0   # s, longest reverse per episode: there is no rear sens
 BACKOFF_CENTER = 0.25    # |err_x| below this counts as "owner in front of the sonar"
 BACKOFF_ENABLED = False  # reverse away from a too-close owner; OFF: low sonar saw the floor and drove backwards
 FORWARD_ONLY = True      # while following, no wheel ever turns backwards (turn = one side forward, other stopped)
-TURN_MIN = 110           # PWM, minimum for the one moving side when turning on the spot (one side must drag the other)
+TURN_MIN = 90            # PWM, minimum for the one moving side when turning on the spot (one side must drag the other)
+STRAIGHT_DRIVE = True    # driving: equal PWM both sides (straight); owner > PIVOT_ERR off-centre: stop, turn, then drive
 SONAR_MAX_AGE = 0.3      # s, older sonar readings are ignored
 SEARCH_SPEED = 90        # PWM per side for in-place rotation (slow; just above MIN_SPEED)
 SPIN_DEG_PER_S = 90.0    # deg/s at SEARCH_SPEED on the demo floor; measure it (plans/search_plan.md S0)!
@@ -106,6 +107,16 @@ def ramp_fwd(prev, target, dt):
 def mix(fwd, turn):
     """Forward + turn -> (left, right) motor values."""
     return shape_speed(fwd + turn), shape_speed(fwd - turn)
+
+
+def straight_or_turn(fwd, turn, err_x):
+    """STRAIGHT_DRIVE: never mix forward and turning. Owner clearly to one side -> stop and turn towards them;
+    otherwise drive straight with the same PWM on both sides. Returns (forward target, turn)."""
+    if not STRAIGHT_DRIVE:
+        return fwd, turn
+    if abs(err_x) > PIVOT_ERR:
+        return 0.0, turn
+    return fwd, (0.0 if fwd > 0 else turn)
 
 
 def arc(fwd, turn):

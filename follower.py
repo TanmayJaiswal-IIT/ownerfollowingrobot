@@ -34,7 +34,7 @@ from control import (BACKOFF_CENTER, CENTER_DEADBAND, BACKOFF_SPEED, MAX_SPEED, 
                      SEARCH_CONFIRM, SIZE_SMOOTH, SONAR_MAX_AGE, TARGET_DIST, TARGET_TORSO, VEL_WINDOW,
                      BOX_SMOOTH, FollowState, box_cut_off, Search, arc, box_target, box_width, centre_error, est_distance, follow_command, gap_rate,
                      lock_target, mix, owner_speed, parse_distance, ramp_fwd, transition_allowed,
-                     forward_only, update_backoff)
+                     forward_only, straight_or_turn, update_backoff)
 from perception import best_match, hands_up, torso_hist, torso_ratio
 
 # ---- Tuning (adjust during testing) ----
@@ -614,6 +614,7 @@ def main():
                             fs.v_owner = owner_speed(gap_rate(fs.dist_hist), fs.fwd)
                             fwd_target, turn, fs.driving = follow_command(box, W, size, fs.driving, fs.v_owner,
                                                                           target)
+                            fwd_target, turn = straight_or_turn(fwd_target, turn, centre_error(box, W))
                             centred = abs(centre_error(box, W)) < BACKOFF_CENTER
                             # sonar stop: only when the camera agrees the owner is near (else it sees something
                             # else, e.g. the floor; the Arduino still stops for anything under 20 cm)
