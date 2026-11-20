@@ -6,8 +6,8 @@ import numpy as np
 
 from control import (BACKOFF_CLEAR_CM, BACKOFF_MAX_TIME, DEADBAND, MAX_SPEED, MIN_SPEED, OWNER_MOVING,
                      ROBOT_TOP_SPEED, SEARCH_LOOK, SEARCH_SPEED, SEARCH_STEP_DEG, SPIN_DEG_PER_S, STATES,
-                     TARGET_DIST, TARGET_TORSO, TRANSITIONS, VEL_GAIN, FollowState, Search, est_distance,
-                     follow_command, gap_rate, mix, owner_speed, pace_term, parse_distance, ramp_fwd,
+                     TARGET_DIST, TARGET_TORSO, TRANSITIONS, VEL_GAIN, FollowState, Search, arc,
+                     est_distance, follow_command, lock_target, gap_rate, mix, owner_speed, pace_term, parse_distance, ramp_fwd,
                      transition_allowed, update_backoff)
 from perception import L_HIP, L_SHOULDER, R_HIP, R_SHOULDER, best_match, torso_hist, torso_ratio
 
@@ -198,5 +198,18 @@ def reachable(start, edges):
 check("T37 all states reachable from IDLE, and IDLE reachable from all",
       reachable("IDLE", TRANSITIONS) == set(STATES)
       and all("IDLE" in reachable(s, TRANSITIONS) for s in STATES))
+
+# ---- move towards the owner (lock-time target, curve instead of spin) ----
+check("T38 lock target from owner's size", close(lock_target(0.55), 0.55)
+      and lock_target(None) == TARGET_TORSO and lock_target(0.95) == TARGET_TORSO)
+fwd, _, d = follow_command(CENTRED, W, 0.40, False, None, target=0.55)
+check("T39 owner farther than at lock -> drive forward", fwd >= MIN_SPEED and d)
+fwd, _, d = follow_command(CENTRED, W, 0.56, True, None, target=0.55)
+check("T40 owner at lock distance -> stop", fwd == 0 and not d)
+check("T41 distance uses lock target", close(est_distance(0.275, 0.55), 2 * TARGET_DIST))
+fwd, turn, _ = follow_command(FAR_RIGHT, W, 0.40, False, None, target=0.55)
+L, R = mix(fwd, arc(fwd, turn))
+check("T42 owner off-centre while driving -> curve, no wheel reverses", L > R >= 0)
+check("T43 not driving -> pivot still allowed", arc(0, 80) == 80)
 
 print("All tests passed.")

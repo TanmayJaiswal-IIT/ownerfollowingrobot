@@ -8,7 +8,9 @@ import numpy as np
 
 # ---- Tuning (adjust during testing) ----
 TARGET_DIST = 1.0        # m, wanted gap from camera lens to owner (set in plans/distance_plan.md Phase 0)
-TARGET_TORSO = 0.30      # shoulder-to-hip length / frame height at TARGET_DIST; measure in Phase 3!
+TARGET_TORSO = 0.30      # shoulder-to-hip length / frame height at TARGET_DIST; fallback only, see LOCK_TARGET
+LOCK_TARGET = True       # use the owner's torso size at lock time as the target (lock from ~TARGET_DIST away!)
+TARGET_MIN, TARGET_MAX = 0.12, 0.80   # sane range for a lock-time target (outside it -> TARGET_TORSO)
 DEADBAND = 0.03          # once stopped, start again only when the torso is this much smaller (~10 % of TARGET_TORSO)
 SIZE_SMOOTH = 0.3        # 0..1, weight of the newest frame in the smoothed torso size
 CENTER_DEADBAND = 0.10   # no turning when owner is this close to the frame centre
@@ -44,10 +46,17 @@ def shape_speed(v):
     return int(np.sign(v) * max(abs(v), MIN_SPEED))
 
 
-def est_distance(size):
-    """Rough distance in metres from the torso size (size ∝ 1 / distance).
+def est_distance(size, target=TARGET_TORSO):
+    """Rough distance in metres from the torso size (size ∝ 1 / distance; `target` is the size at TARGET_DIST).
     Control only uses its rate of change: a calibration error scales the rate but never flips its sign."""
-    return TARGET_DIST * TARGET_TORSO / size if size else None
+    return TARGET_DIST * target / size if size else None
+
+
+def lock_target(size):
+    """Follow target from the owner's torso size at lock time, or TARGET_TORSO if unusable / disabled."""
+    if LOCK_TARGET and size is not None and TARGET_MIN <= size <= TARGET_MAX:
+        return size
+    return TARGET_TORSO
 
 
 def gap_rate(history):
@@ -89,26 +98,35 @@ def mix(fwd, turn):
     return shape_speed(fwd + turn), shape_speed(fwd - turn)
 
 
+def arc(fwd, turn):
+    """While driving forward, limit the turn so the inner wheels slow down but never reverse:
+    the robot curves towards the owner instead of spinning on the spot."""
+    if fwd > 0:
+        return max(-fwd, min(fwd, turn))
+    return turn
+
+
 def centre_error(box, W):
     """Owner's horizontal offset from the frame centre: -1 (left) .. +1 (right)."""
     x1, _, x2, _ = box
     return ((x1 + x2) / 2 - W / 2) / (W / 2)
 
 
-def follow_command(box, W, size, driving, v_owner=None):
-    """Steer toward the owner; drive until the torso is TARGET_TORSO tall, faster when the owner walks away.
+def follow_command(box, W, size, driving, v_owner=None, target=TARGET_TORSO):
+    """Steer toward the owner; drive until the torso is `target` tall, faster when the owner walks away.
     `driving` is the previous decision: once stopped, start again only when the owner is DEADBAND farther.
     Returns (forward target, turn, driving)."""
     err_x = centre_error(box, W)
+    deadband = DEADBAND * target / TARGET_TORSO     # same ~10 % hysteresis for any target
     if size is None:
         driving = False                             # torso not visible: steer only, never drive blind
     elif driving:
-        driving = size < TARGET_TORSO
+        driving = size < target
     else:
-        driving = size < TARGET_TORSO - DEADBAND
+        driving = size < target - deadband
     fwd = 0.0
     if driving:
-        fwd = min(MAX_SPEED, max(K_FWD * (TARGET_TORSO - size), MIN_SPEED) + pace_term(v_owner))
+        fwd = min(MAX_SPEED, max(K_FWD * (target - size), MIN_SPEED) + pace_term(v_owner))
     turn = K_TURN * err_x if abs(err_x) > CENTER_DEADBAND else 0.0
     return fwd, turn, driving
 

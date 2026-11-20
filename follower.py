@@ -32,8 +32,9 @@ from ultralytics import YOLO
 from camera import open_camera
 from control import (BACKOFF_CENTER, BACKOFF_SPEED, MAX_SPEED, MIN_DIST_CM, OUTRUN_DIST, OUTRUN_TIME,
                      SEARCH_CONFIRM, SIZE_SMOOTH, SONAR_MAX_AGE, TARGET_DIST, TARGET_TORSO, VEL_WINDOW,
-                     FollowState, Search, centre_error, est_distance, follow_command, gap_rate, mix,
-                     owner_speed, parse_distance, ramp_fwd, transition_allowed, update_backoff)
+                     FollowState, Search, arc, centre_error, est_distance, follow_command, gap_rate,
+                     lock_target, mix, owner_speed, parse_distance, ramp_fwd, transition_allowed,
+                     update_backoff)
 from perception import best_match, hands_up, torso_hist, torso_ratio
 
 # ---- Tuning (adjust during testing) ----
@@ -41,6 +42,7 @@ LOCK_HOLD = 1.0          # s, one hand up to lock
 UNLOCK_HOLD = 1.5        # s, both hands up to unlock
 COOLDOWN = 2.0           # s after unlock before anyone can lock again
 LOST_STOP = 0.3          # s owner missing before the robot stops
+SEARCH_DELAY = 2.0       # s owner missing (robot stopped, waiting) before the 360 deg search starts
 REID_THRESH = 0.75       # clothing-colour similarity needed to re-lock (0..1)
 NOT_FOUND_SHOW = 3.0     # s the "OWNER NOT FOUND" banner stays up after a failed search
 # Search speed, step and timing live in control.py.
@@ -384,6 +386,7 @@ def main():
 
     state = "IDLE"            # see TRANSITIONS in control.py; change it only with change_state()
     owner_id, owner_hist = None, None
+    target_torso = TARGET_TORSO   # follow target; set from the owner's torso size at lock (control.LOCK_TARGET)
     lock_start = {}           # track id -> time one hand went up
     unlock_start = None
     last_seen = 0.0
@@ -452,6 +455,9 @@ def main():
                                 if hist is None:      # box unusable this frame, try again next frame
                                     continue
                                 owner_id, owner_hist = pid, hist
+                                target_torso = lock_target(torso_ratio(k, H))
+                                log.info(f"[LOCK] follow target torso = {target_torso:.2f} "
+                                         f"(keeps about this distance)")
                                 state, last_seen = change_state(state, "FOLLOW", f"lock id {pid}"), now
                                 fs, outran = FollowState(), False
                                 lock_start.clear()
@@ -521,15 +527,16 @@ def main():
                 if owner is None:
                     fs.fwd, fs.backing = 0.0, False
                     gone = now - last_seen > LOST_STOP
-                    if gone and not args.no_search and (state == "FOLLOW" or outran):
+                    search_now = now - last_seen > SEARCH_DELAY
+                    if search_now and not args.no_search and (state == "FOLLOW" or outran):
                         direction = 1 if last_err >= 0 else -1
-                        reason = "outran owner left view" if outran else f"owner not seen for {LOST_STOP}s"
+                        reason = "outran owner left view" if outran else f"owner not seen for {SEARCH_DELAY}s"
                         state = change_state(state, "SEARCH", reason)
                         search, candidate = Search(direction, now), (None, 0)
                         fs = FollowState()
-                        log.warning(f"[SEARCH] owner id {owner_id} not seen for {LOST_STOP}s -> scanning, "
+                        log.warning(f"[SEARCH] owner id {owner_id} not seen for {SEARCH_DELAY}s -> scanning, "
                                     f"turning {'right' if direction > 0 else 'left'} first")
-                    elif gone and state == "FOLLOW":
+                    elif gone and args.no_search and state == "FOLLOW":
                         state = change_state(state, "LOST", "owner lost, --no-search")  # motors stay at 0
                         fs = FollowState()
                         log.warning(f"[LOST] owner id {owner_id} not seen for {LOST_STOP}s "
@@ -543,13 +550,13 @@ def main():
                     raw = torso_ratio(k, H)
                     if raw is not None:
                         fs.size_s = raw if fs.size_s is None else (1 - SIZE_SMOOTH) * fs.size_s + SIZE_SMOOTH * raw
-                        fs.dist_hist.append((now, est_distance(fs.size_s)))
+                        fs.dist_hist.append((now, est_distance(fs.size_s, target_torso)))
                         while now - fs.dist_hist[0][0] > VEL_WINDOW:
                             fs.dist_hist.popleft()
                     else:
                         fs.dist_hist.clear()     # a window with a hole would give a fake speed
                     size = fs.size_s if raw is not None else None   # torso hidden this frame -> steer only
-                    gap = est_distance(size)
+                    gap = est_distance(size, target_torso)
 
                     if outran and gap is not None and gap < OUTRUN_DIST:
                         outran = False
@@ -585,10 +592,14 @@ def main():
                             hint = f"Too fast for me - come back within {OUTRUN_DIST} m"
                         else:
                             fs.v_owner = owner_speed(gap_rate(fs.dist_hist), fs.fwd)
-                            fwd_target, turn, fs.driving = follow_command(box, W, size, fs.driving, fs.v_owner)
+                            fwd_target, turn, fs.driving = follow_command(box, W, size, fs.driving, fs.v_owner,
+                                                                          target_torso)
                             centred = abs(centre_error(box, W)) < BACKOFF_CENTER
-                            if us is not None and centred and us < TARGET_DIST * 100:
-                                fwd_target, fs.driving = 0.0, False      # sonar stop
+                            # sonar stop: only when the camera agrees the owner is near (else it sees something
+                            # else, e.g. the floor; the Arduino still stops for anything under 20 cm)
+                            if (us is not None and centred and us < TARGET_DIST * 100
+                                    and (gap is None or gap < 1.5 * TARGET_DIST)):
+                                fwd_target, fs.driving = 0.0, False
                             was_backing = fs.backing
                             if update_backoff(fs, us, centred, gap, now):
                                 fs.fwd = -BACKOFF_SPEED              # not ramped; owner_speed() sees the robot moving back
@@ -605,11 +616,11 @@ def main():
                                     last_sonar_warn = now
                                     log.warning(f"[SONAR] obstacle at {us} cm but camera says owner "
                                                 f"~{gap:.1f} m -> stop, no reverse")
-                            left, right = mix(fs.fwd, turn)
+                            left, right = mix(fs.fwd, arc(fs.fwd, turn))   # curve towards owner, no spin
                             if fs.backing:
                                 hint = f"Too close ({us} cm) - backing off"
                             elif size is not None:
-                                hint = (f"Torso {size:.2f} / {TARGET_TORSO:.2f}  ~{gap:.1f} m"
+                                hint = (f"Torso {size:.2f} / {target_torso:.2f}  ~{gap:.1f} m"
                                         f"   both hands up = unlock")
                                 if fs.v_owner is not None:
                                     hint += f"  owner {fs.v_owner:+.1f} m/s"
@@ -632,11 +643,11 @@ def main():
                 last_log = now
                 ids = [p[0] for p in people]
                 torso = f"{fs.size_s:.3f}" if fs.size_s is not None else "-"
-                dist = f"{est_distance(fs.size_s):.2f}" if fs.size_s is not None else "-"
+                dist = f"{est_distance(fs.size_s, target_torso):.2f}" if fs.size_s is not None else "-"
                 ov = f"{fs.v_owner:+.2f}" if fs.v_owner is not None else "-"
                 log.info(f"[STATUS] {state:<6} owner={owner_id if owner_id is not None else '-'} "
                          f"people={len(ids)} {ids} L={left:+4d} R={right:+4d} "
-                         f"torso={torso}/{TARGET_TORSO:.2f} dist~{dist}m drive={fs.driving} "
+                         f"torso={torso}/{target_torso:.2f} dist~{dist}m drive={fs.driving} "
                          f"ov={ov} fwd={fs.fwd:.0f} us={us if us is not None else '-'} "
                          f"search={f'{search.progress()}/360' if search else '-'} fps={fps:.1f}")
 
