@@ -41,6 +41,9 @@ BACKOFF_CENTER = 0.25    # |err_x| below this counts as "owner in front of the s
 BACKOFF_ENABLED = False  # reverse away from a too-close owner; OFF: low sonar saw the floor and drove backwards
 FORWARD_ONLY = True      # while following, no wheel ever turns backwards (turn = one side forward, other stopped)
 TURN_MIN = 90            # PWM, minimum for the one moving side when turning on the spot (one side must drag the other)
+REVERSE_MARGIN = 0.15    # --straight-only: reverse when the owner looks this much bigger than the target (15 %)
+REVERSE_SPEED = 75       # PWM, --straight-only slow reverse (just above MIN_SPEED)
+REVERSE_MAX_TIME = 2.0   # s, longest reverse per episode (no rear sensor), then wait until the owner steps back
 STRAIGHT_DRIVE = True    # driving: equal PWM both sides (straight); owner > PIVOT_ERR off-centre: stop, turn, then drive
 SONAR_MAX_AGE = 0.3      # s, older sonar readings are ignored
 SEARCH_SPEED = 90        # PWM per side for in-place rotation (slow; just above MIN_SPEED)
@@ -224,6 +227,25 @@ def update_backoff(fs, us_cm, centred, cam_dist, now):
     return False
 
 
+def straight_reverse(fs, size, target, us_cm, now):
+    """--straight-only: True while the robot should reverse slowly. Decided by the CAMERA (owner looks more than
+    REVERSE_MARGIN bigger than the target); the sonar can only veto (it clearly sees nothing near, 999 = no echo
+    is ignored). Reversing is blind, so at most REVERSE_MAX_TIME, then wait until the owner is no longer too close."""
+    if size is None or size <= target * (1 + REVERSE_MARGIN):
+        fs.rev_since, fs.rev_wait = None, False
+        return False
+    if us_cm is not None and us_cm < 999 and us_cm > 1.5 * TARGET_DIST * 100:
+        return False                                # sonar sees nothing near: camera is wrong, don't reverse
+    if fs.rev_wait:
+        return False
+    if fs.rev_since is None:
+        fs.rev_since = now
+    if now - fs.rev_since >= REVERSE_MAX_TIME:
+        fs.rev_wait = True
+        return False
+    return True
+
+
 class FollowState:
     """Follow memory for the current owner track; replaced on lock, re-lock, lost and unlock."""
 
@@ -237,6 +259,8 @@ class FollowState:
         self.backing = False        # reversing away from an owner who is too close
         self.backoff_start = 0.0    # time the current back-off started
         self.backoff_wait = False   # back-off time limit hit: wait until the owner steps back
+        self.rev_since = None       # --straight-only: time the current reverse started
+        self.rev_wait = False       # --straight-only: reverse time limit hit, wait until the owner steps back
 
 
 class Search:

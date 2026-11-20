@@ -30,11 +30,11 @@ import cv2
 from ultralytics import YOLO
 
 from camera import open_camera
-from control import (BACKOFF_CENTER, CENTER_DEADBAND, BACKOFF_SPEED, MAX_SPEED, MIN_DIST_CM, OUTRUN_DIST, OUTRUN_TIME,
+from control import (BACKOFF_CENTER, CENTER_DEADBAND, REVERSE_SPEED, BACKOFF_SPEED, MAX_SPEED, MIN_DIST_CM, OUTRUN_DIST, OUTRUN_TIME,
                      SEARCH_CONFIRM, SIZE_SMOOTH, SONAR_MAX_AGE, TARGET_DIST, TARGET_TORSO, VEL_WINDOW,
                      BOX_SMOOTH, FollowState, box_cut_off, Search, arc, box_target, box_width, centre_error, est_distance, follow_command, gap_rate,
                      lock_target, mix, owner_speed, parse_distance, ramp_fwd, transition_allowed,
-                     forward_only, straight_or_turn, update_backoff)
+                     forward_only, straight_or_turn, straight_reverse, update_backoff)
 from perception import best_match, hands_up, torso_hist, torso_ratio
 
 # ---- Tuning (adjust during testing) ----
@@ -352,6 +352,8 @@ def main():
     ap.add_argument("--no-show", action="store_true", help="no video window (headless robot)")
     ap.add_argument("--stream", type=int, default=None, nargs="?", const=8080,
                     help="stream live annotated video over HTTP (default port: 8080)")
+    ap.add_argument("--straight-only", action="store_true",
+                    help="hard mode: only forward / stop / slow reverse, never turn (L == R always, no search)")
     ap.add_argument("--search", action="store_true",
                     help="enable the 360 deg owner search (off by default: robot stops and waits)")
     ap.add_argument("--no-search", action="store_true",
@@ -361,7 +363,7 @@ def main():
     ap.add_argument("--no-flip", action="store_true",
                     help="camera mounted upright: do not rotate frames 180 deg (default: rotate, camera is inverted)")
     args = ap.parse_args()
-    args.no_search = args.no_search or not args.search   # search is opt-in for now
+    args.no_search = args.no_search or not args.search or args.straight_only   # search is opt-in for now
 
     # Use all 4 CPU cores on Raspberry Pi
     try:
@@ -535,7 +537,7 @@ def main():
                         fs = FollowState()
 
                 if owner is None:
-                    fs.fwd, fs.backing = 0.0, False
+                    fs.fwd, fs.backing, fs.rev_since = 0.0, False, None
                     gone = now - last_seen > LOST_STOP
                     search_now = now - last_seen > SEARCH_DELAY
                     if search_now and not args.no_search and (state == "FOLLOW" or outran):
@@ -621,25 +623,37 @@ def main():
                             if (us is not None and centred and us < TARGET_DIST * 100
                                     and (gap is None or gap < 1.5 * TARGET_DIST)):
                                 fwd_target, fs.driving = 0.0, False
-                            was_backing = fs.backing
-                            if update_backoff(fs, us, centred, gap, now):
-                                fs.fwd = -BACKOFF_SPEED              # not ramped; owner_speed() sees the robot moving back
-                                if not was_backing:
-                                    log.info(f"[BACKOFF] owner at {us} cm -> reversing")
+                            reversing = False
+                            if args.straight_only:       # hard mode: L == R always, no turning at all
+                                reversing = straight_reverse(fs, size, target, us, now)
+                                if reversing:
+                                    if fs.fwd >= 0:
+                                        log.info(f"[REVERSE] owner too close ({cue} {size:.2f} > {target:.2f})"
+                                                 f" -> slow reverse")
+                                    fs.fwd = -REVERSE_SPEED          # not ramped, slow
+                                else:
+                                    fs.fwd = ramp_fwd(fs.fwd, fwd_target, dt)
+                                left, right = mix(fs.fwd, 0)
                             else:
-                                fs.fwd = ramp_fwd(fs.fwd, fwd_target, dt)
-                                if was_backing and fs.backoff_wait:
-                                    log.warning("[BACKOFF] time limit, waiting for owner to step back")
-                                elif was_backing:
-                                    log.info(f"[BACKOFF] done at {us if us is not None else '-'} cm")
-                                elif (us is not None and us < MIN_DIST_CM and centred and gap is not None
-                                      and gap >= TARGET_DIST and now - last_sonar_warn >= LOG_EVERY):
-                                    last_sonar_warn = now
-                                    log.warning(f"[SONAR] obstacle at {us} cm but camera says owner "
-                                                f"~{gap:.1f} m -> stop, no reverse")
-                            left, right = forward_only(*mix(fs.fwd, arc(fs.fwd, turn)))  # never backwards
-                            if fs.backing:
-                                hint = f"Too close ({us} cm) - backing off"
+                                was_backing = fs.backing
+                                if update_backoff(fs, us, centred, gap, now):
+                                    fs.fwd = -BACKOFF_SPEED              # not ramped; owner_speed() sees the robot moving back
+                                    if not was_backing:
+                                        log.info(f"[BACKOFF] owner at {us} cm -> reversing")
+                                else:
+                                    fs.fwd = ramp_fwd(fs.fwd, fwd_target, dt)
+                                    if was_backing and fs.backoff_wait:
+                                        log.warning("[BACKOFF] time limit, waiting for owner to step back")
+                                    elif was_backing:
+                                        log.info(f"[BACKOFF] done at {us if us is not None else '-'} cm")
+                                    elif (us is not None and us < MIN_DIST_CM and centred and gap is not None
+                                          and gap >= TARGET_DIST and now - last_sonar_warn >= LOG_EVERY):
+                                        last_sonar_warn = now
+                                        log.warning(f"[SONAR] obstacle at {us} cm but camera says owner "
+                                                    f"~{gap:.1f} m -> stop, no reverse")
+                                left, right = forward_only(*mix(fs.fwd, arc(fs.fwd, turn)))  # never backwards
+                            if fs.backing or reversing:
+                                hint = "Too close - backing off slowly"
                             elif size is not None:
                                 hint = (f"{cue} {size:.2f}/{target:.2f} ~{gap:.1f} m "
                                         f"{'DRIVE' if fs.driving else 'close-stop'}"
@@ -647,7 +661,8 @@ def main():
                                 if fs.v_owner is not None:
                                     hint += f"  owner {fs.v_owner:+.1f} m/s"
                             else:
-                                hint = "Owner not measurable - steering only"
+                                hint = ("Owner not measurable - stopped" if args.straight_only
+                                        else "Owner not measurable - steering only")
                             err = centre_error(box, W)
                             hint += ("  | owner LEFT" if err < -CENTER_DEADBAND else
                                      "  | owner RIGHT" if err > CENTER_DEADBAND else "  | owner AHEAD")

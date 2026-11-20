@@ -252,4 +252,23 @@ f, tr = straight_or_turn(100, 60, 0.5)
 check("T55 owner clearly to one side -> stop, then turn", f == 0 and tr == 60)
 check("T56 stopped, small offset -> nothing", straight_or_turn(0, 0, 0.1) == (0, 0))
 
+# ---- --straight-only hard mode: forward / stop / slow reverse, camera decides, sonar can veto ----
+from control import REVERSE_MARGIN, REVERSE_MAX_TIME, straight_reverse
+fs = FollowState()
+check("T57 owner at target -> no reverse", not straight_reverse(fs, 0.60, 0.60, None, 0.0))
+check("T58 owner clearly closer -> reverse", straight_reverse(fs, 0.60 * (1 + REVERSE_MARGIN) + 0.05, 0.60, None, 0.0))
+fs = FollowState()
+check("T59 sonar says nothing near -> veto", not straight_reverse(fs, 0.80, 0.60, 120, 0.0))
+check("T60 sonar no echo (999) ignored", straight_reverse(fs, 0.80, 0.60, 999, 0.0))
+fs = FollowState()
+straight_reverse(fs, 0.80, 0.60, None, 0.0)
+check("T61 reverse capped, then waits for step back",
+      not straight_reverse(fs, 0.80, 0.60, None, REVERSE_MAX_TIME + 0.1)
+      and not straight_reverse(fs, 0.80, 0.60, None, REVERSE_MAX_TIME + 1.0)
+      and not straight_reverse(fs, 0.55, 0.60, None, REVERSE_MAX_TIME + 1.5)
+      and straight_reverse(fs, 0.80, 0.60, None, REVERSE_MAX_TIME + 2.0))
+check("T62 owner not measurable -> no reverse", not straight_reverse(FollowState(), None, 0.60, 30, 0.0))
+check("T63 straight-only output is equal both sides", mix(-75, 0)[0] == mix(-75, 0)[1] == -75
+      and mix(90, 0)[0] == mix(90, 0)[1] == 90)
+
 print("All tests passed.")

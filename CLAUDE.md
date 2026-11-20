@@ -225,6 +225,7 @@ libcamerify .venv/bin/python3 motor_test.py --port /dev/ttyACM0
 | `--model` | auto | Model path; auto-detects `yolov8n-pose_ncnn_model/` if present |
 | `--no-show` | off | Skip OpenCV display window (required over SSH) |
 | `--stream [PORT]` | 8080 | Start MJPEG HTTP server; watch in laptop browser |
+| `--straight-only` | off | Hard mode: L == R always (no turning): forward / stop / slow reverse (camera-decided, max 2 s), no search |
 | `--search` | off | Enable the 360° owner search (off for now: robot stops and waits when owner lost) |
 | `--mirror` | off | Also flip the image left-right; use if the robot turns away from the owner |
 | `--no-flip` | off | Camera is mounted upside down, so frames are rotated 180° by default; pass this if it is mounted upright |
