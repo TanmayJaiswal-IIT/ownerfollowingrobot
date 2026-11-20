@@ -14,6 +14,10 @@ TARGET_MIN, TARGET_MAX = 0.12, 0.80   # sane range for a lock-time target (outsi
 DEADBAND = 0.03          # once stopped, start again only when the torso is this much smaller (~10 % of TARGET_TORSO)
 SIZE_SMOOTH = 0.3        # 0..1, weight of the newest frame in the smoothed torso size
 CENTER_DEADBAND = 0.10   # no turning when owner is this close to the frame centre
+PIVOT_ERR = 0.30         # when stopped, turn on the spot only if the owner is this far off-centre (no wiggling)
+BOX_TARGET = 0.35        # box width / frame width at TARGET_DIST: fallback distance cue when the torso is hidden
+BOX_MIN, BOX_MAX = 0.12, 0.80   # sane range for the box-width target learned after lock
+BOX_SMOOTH = 0.3         # 0..1, weight of the newest frame in the smoothed box width
 K_FWD = 1000             # forward gain (torso sizes are about half of box sizes)
 K_TURN = 160             # turning gain
 MAX_SPEED = 200          # PWM limit (0..255)
@@ -144,7 +148,21 @@ def follow_command(box, W, size, driving, v_owner=None, target=TARGET_TORSO):
     if driving:
         fwd = min(MAX_SPEED, max(K_FWD * (target - size), MIN_SPEED) + pace_term(v_owner))
     turn = K_TURN * err_x if abs(err_x) > CENTER_DEADBAND else 0.0
+    if not driving and abs(err_x) < PIVOT_ERR:
+        turn = 0.0                                  # stopped and owner roughly ahead: don't spin
     return fwd, turn, driving
+
+
+def box_width(box, W):
+    """Owner's box width / frame width: grows as they come closer, and unlike the torso it stays measurable
+    when a low camera only sees the legs (the box is cut at the top, not at the sides)."""
+    x1, _, x2, _ = box
+    return (x2 - x1) / W
+
+
+def box_target(width):
+    """Box-width target learned from the owner's first hands-down frame after lock, or BOX_TARGET."""
+    return width if width is not None and BOX_MIN <= width <= BOX_MAX else BOX_TARGET
 
 
 def parse_distance(buf):

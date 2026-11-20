@@ -222,4 +222,17 @@ check("T45 forward unchanged, reverse blocked", forward_only(150, 120) == (150, 
 control.BACKOFF_ENABLED = False
 check("T46 back-off disabled -> never reverses", not update_backoff(FollowState(), 30, True, 0.5, 0.0))
 
+# ---- drive towards the owner when the torso is hidden (box width), no wiggling ----
+from control import BOX_TARGET, box_target, box_width
+check("T47 box width", close(box_width((100, 0, 260, 480), W), 0.25))
+check("T48 box target learned or fallback", close(box_target(0.4), 0.4) and box_target(None) == BOX_TARGET
+      and box_target(0.95) == BOX_TARGET)
+fwd, turn, d = follow_command(CENTRED, W, 0.20, False, None, target=0.40)
+check("T49 torso hidden but box small (owner far) -> drive forward", fwd >= MIN_SPEED and d)
+_, turn, d = follow_command((W / 2 + 10, 100, W / 2 + 130, 400), W, 0.45, False, None, target=0.40)
+check("T50 stopped, owner slightly off-centre -> no spin", turn == 0 and not d)
+fwd, turn, d = follow_command((W / 2 + 10, 100, W / 2 + 130, 400), W, 0.20, False, None, target=0.40)
+L, R = forward_only(*mix(fwd, arc(fwd, turn)))
+check("T51 driving, owner slightly right -> curve right, both forward", L > R > 0)
+
 print("All tests passed.")

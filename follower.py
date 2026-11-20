@@ -30,9 +30,9 @@ import cv2
 from ultralytics import YOLO
 
 from camera import open_camera
-from control import (BACKOFF_CENTER, BACKOFF_SPEED, MAX_SPEED, MIN_DIST_CM, OUTRUN_DIST, OUTRUN_TIME,
+from control import (BACKOFF_CENTER, CENTER_DEADBAND, BACKOFF_SPEED, MAX_SPEED, MIN_DIST_CM, OUTRUN_DIST, OUTRUN_TIME,
                      SEARCH_CONFIRM, SIZE_SMOOTH, SONAR_MAX_AGE, TARGET_DIST, TARGET_TORSO, VEL_WINDOW,
-                     FollowState, Search, arc, centre_error, est_distance, follow_command, gap_rate,
+                     BOX_SMOOTH, FollowState, Search, arc, box_target, box_width, centre_error, est_distance, follow_command, gap_rate,
                      lock_target, mix, owner_speed, parse_distance, ramp_fwd, transition_allowed,
                      forward_only, update_backoff)
 from perception import best_match, hands_up, torso_hist, torso_ratio
@@ -392,6 +392,8 @@ def main():
     state = "IDLE"            # see TRANSITIONS in control.py; change it only with change_state()
     owner_id, owner_hist = None, None
     target_torso = TARGET_TORSO   # follow target; set from the owner's torso size at lock (control.LOCK_TARGET)
+    target_box = None         # box-width target, learned from the owner's first hands-down frame after lock
+    box_s = None              # smoothed owner box width (fallback distance cue when the torso is hidden)
     lock_start = {}           # track id -> time one hand went up
     unlock_start = None
     last_seen = 0.0
@@ -463,6 +465,7 @@ def main():
                                     continue
                                 owner_id, owner_hist = pid, hist
                                 target_torso = lock_target(torso_ratio(k, H))
+                                target_box, box_s = None, None
                                 log.info(f"[LOCK] follow target torso = {target_torso:.2f} "
                                          f"(keeps about this distance)")
                                 state, last_seen = change_state(state, "FOLLOW", f"lock id {pid}"), now
@@ -562,8 +565,18 @@ def main():
                             fs.dist_hist.popleft()
                     else:
                         fs.dist_hist.clear()     # a window with a hole would give a fake speed
-                    size = fs.size_s if raw is not None else None   # torso hidden this frame -> steer only
-                    gap = est_distance(size, target_torso)
+                    bw = box_width(box, W)
+                    box_s = bw if box_s is None else (1 - BOX_SMOOTH) * box_s + BOX_SMOOTH * bw
+                    if target_box is None and hands_up(k) == 0:
+                        target_box = box_target(box_s)
+                        log.info(f"[LOCK] follow target box width = {target_box:.2f} (used when torso hidden)")
+                    if raw is not None:          # torso visible: best distance cue
+                        size, target, cue = fs.size_s, target_torso, "torso"
+                    elif target_box is not None:  # torso hidden (low camera, too close): use box width
+                        size, target, cue = box_s, target_box, "box"
+                    else:
+                        size, target, cue = None, target_torso, "none"
+                    gap = est_distance(size, target)
 
                     if outran and gap is not None and gap < OUTRUN_DIST:
                         outran = False
@@ -600,7 +613,7 @@ def main():
                         else:
                             fs.v_owner = owner_speed(gap_rate(fs.dist_hist), fs.fwd)
                             fwd_target, turn, fs.driving = follow_command(box, W, size, fs.driving, fs.v_owner,
-                                                                          target_torso)
+                                                                          target)
                             centred = abs(centre_error(box, W)) < BACKOFF_CENTER
                             # sonar stop: only when the camera agrees the owner is near (else it sees something
                             # else, e.g. the floor; the Arduino still stops for anything under 20 cm)
@@ -627,12 +640,16 @@ def main():
                             if fs.backing:
                                 hint = f"Too close ({us} cm) - backing off"
                             elif size is not None:
-                                hint = (f"Torso {size:.2f} / {target_torso:.2f}  ~{gap:.1f} m"
+                                hint = (f"{cue} {size:.2f}/{target:.2f} ~{gap:.1f} m "
+                                        f"{'DRIVE' if fs.driving else 'close-stop'}"
                                         f"   both hands up = unlock")
                                 if fs.v_owner is not None:
                                     hint += f"  owner {fs.v_owner:+.1f} m/s"
                             else:
-                                hint = "Torso not visible - steering only"
+                                hint = "Owner not measurable - steering only"
+                            err = centre_error(box, W)
+                            hint += ("  | owner LEFT" if err < -CENTER_DEADBAND else
+                                     "  | owner RIGHT" if err > CENTER_DEADBAND else "  | owner AHEAD")
 
                             if fs.fwd >= 0.9 * MAX_SPEED and gap is not None and gap > OUTRUN_DIST:
                                 if fs.outrun_since is None:
@@ -654,7 +671,8 @@ def main():
                 ov = f"{fs.v_owner:+.2f}" if fs.v_owner is not None else "-"
                 log.info(f"[STATUS] {state:<6} owner={owner_id if owner_id is not None else '-'} "
                          f"people={len(ids)} {ids} L={left:+4d} R={right:+4d} "
-                         f"torso={torso}/{target_torso:.2f} dist~{dist}m drive={fs.driving} "
+                         f"torso={torso}/{target_torso:.2f} box={f'{box_s:.2f}' if box_s else '-'}/"
+                         f"{f'{target_box:.2f}' if target_box else '-'} dist~{dist}m drive={fs.driving} "
                          f"ov={ov} fwd={fs.fwd:.0f} us={us if us is not None else '-'} "
                          f"search={f'{search.progress()}/360' if search else '-'} fps={fps:.1f}")
 
