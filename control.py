@@ -48,6 +48,7 @@ TURN_LOOK = 0.7          # s standing still after each nudge to look again (shar
 REVERSE_MARGIN = 0.15    # --straight-only: reverse when the owner looks this much bigger than the target (15 %)
 REVERSE_SPEED = 70       # PWM, --straight-only slow reverse (just above MIN_SPEED)
 REVERSE_MAX_TIME = 2.0   # s, longest reverse per episode (no rear sensor), then wait until the owner steps back
+TURN_DIR = -1            # +1 or -1: flips every turn (not forward). -1: on our robot "turn right" turned it left
 STRAIGHT_DRIVE = True    # driving: equal PWM both sides (straight); owner > PIVOT_ERR off-centre: stop, turn, then drive
 SONAR_MAX_AGE = 0.3      # s, older sonar readings are ignored
 SEARCH_SPEED = 90        # PWM per side for in-place rotation (slow; just above MIN_SPEED)
@@ -112,7 +113,8 @@ def ramp_fwd(prev, target, dt):
 
 
 def mix(fwd, turn):
-    """Forward + turn -> (left, right) motor values."""
+    """Forward + turn -> (left, right) motor values. turn > 0 = turn right (after TURN_DIR correction)."""
+    turn *= TURN_DIR
     return shape_speed(fwd + turn), shape_speed(fwd - turn)
 
 

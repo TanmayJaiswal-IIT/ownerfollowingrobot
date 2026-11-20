@@ -13,6 +13,7 @@ import control
 from control import forward_only
 from perception import L_HIP, L_SHOULDER, R_HIP, R_SHOULDER, best_match, torso_hist, torso_ratio
 
+control.TURN_DIR = 1     # tests check the control logic with the standard turn direction (T71 checks the flip)
 W, H = 640, 500
 CENTRED = (W / 2 - 50, 100, W / 2 + 50, 400)
 FAR_RIGHT = (W - 80, 100, W - 10, 400)
@@ -301,5 +302,9 @@ while t < 6.0:
 check("T69 nudges are short (<= TURN_STEP_MAX each, mostly still)", turning * 0.01 <= 6.0 * TURN_STEP_MAX / TURN_LOOK)
 check("T70 owner only slightly off (0.35) -> no new nudge", not any(CalmTurn().step(i * 0.05, False, 0.35)
                                                                      for i in range(100)))
+
+control.TURN_DIR = -1
+check("T71 TURN_DIR -1 flips turning only", mix(0, 80) == (-80, 80) and mix(90, 0) == (90, 90))
+control.TURN_DIR = 1
 
 print("All tests passed.")
