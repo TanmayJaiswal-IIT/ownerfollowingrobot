@@ -226,6 +226,7 @@ libcamerify .venv/bin/python3 motor_test.py --port /dev/ttyACM0
 | `--no-show` | off | Skip OpenCV display window (required over SSH) |
 | `--stream [PORT]` | 8080 | Start MJPEG HTTP server; watch in laptop browser |
 | `--no-search` | off | Disable rotation search; robot waits in place when owner lost |
+| `--no-flip` | off | Camera is mounted upside down, so frames are rotated 180° by default; pass this if it is mounted upright |
 
 ### One-time setup (already done on our Pi — keep for reference)
 ```bash

@@ -352,6 +352,8 @@ def main():
                     help="stream live annotated video over HTTP (default port: 8080)")
     ap.add_argument("--no-search", action="store_true",
                     help="stop and wait instead of rotating to find a lost owner")
+    ap.add_argument("--no-flip", action="store_true",
+                    help="camera mounted upright: do not rotate frames 180 deg (default: rotate, camera is inverted)")
     args = ap.parse_args()
 
     # Use all 4 CPU cores on Raspberry Pi
@@ -410,6 +412,8 @@ def main():
                     continue
                 log.error("[CAMERA] no frame from camera (camera busy, unplugged or end of video)")
                 break
+            if not args.no_flip:       # camera is mounted upside down on the robot: rotate 180 deg first
+                frame = cv2.rotate(frame, cv2.ROTATE_180)
             H, W = frame.shape[:2]
             now = time.time()
             dt = now - prev_t
