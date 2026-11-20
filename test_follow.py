@@ -9,6 +9,8 @@ from control import (BACKOFF_CLEAR_CM, BACKOFF_MAX_TIME, DEADBAND, MAX_SPEED, MI
                      TARGET_DIST, TARGET_TORSO, TRANSITIONS, VEL_GAIN, FollowState, Search, arc,
                      est_distance, follow_command, lock_target, gap_rate, mix, owner_speed, pace_term, parse_distance, ramp_fwd,
                      transition_allowed, update_backoff)
+import control
+from control import forward_only
 from perception import L_HIP, L_SHOULDER, R_HIP, R_SHOULDER, best_match, torso_hist, torso_ratio
 
 W, H = 640, 500
@@ -108,6 +110,7 @@ check("T22 parse distance", parse_distance("D,45\nD,4") == (45, "D,4")
       and parse_distance("D,999\n") == (999, "") and parse_distance("D,1") == (None, "D,1"))
 
 fs = FollowState()
+control.BACKOFF_ENABLED = True   # T23-T27 test the (currently disabled) back-off logic itself
 check("T23 back-off starts", update_backoff(fs, 50, True, None, 0.0))
 check("T24 not centred -> no back-off", not update_backoff(FollowState(), 50, False, None, 0.0))
 check("T25 camera says far -> obstacle, no back-off", not update_backoff(FollowState(), 50, True, 2.0, 0.0))
@@ -211,5 +214,12 @@ fwd, turn, _ = follow_command(FAR_RIGHT, W, 0.40, False, None, target=0.55)
 L, R = mix(fwd, arc(fwd, turn))
 check("T42 owner off-centre while driving -> curve, no wheel reverses", L > R >= 0)
 check("T43 not driving -> pivot still allowed", arc(0, 80) == 80)
+
+# ---- forward-only following (no wheel ever reverses) ----
+check("T44 pivot becomes one-side turn", forward_only(70, -70) == (control.TURN_MIN, 0)
+      and forward_only(-70, 70) == (0, control.TURN_MIN))
+check("T45 forward unchanged, reverse blocked", forward_only(150, 120) == (150, 120) and forward_only(-80, -80) == (0, 0))
+control.BACKOFF_ENABLED = False
+check("T46 back-off disabled -> never reverses", not update_backoff(FollowState(), 30, True, 0.5, 0.0))
 
 print("All tests passed.")

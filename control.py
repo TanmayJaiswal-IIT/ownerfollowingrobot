@@ -31,6 +31,9 @@ BACKOFF_CLEAR_CM = 75    # cm, stop backing off once the owner is this far (hyst
 BACKOFF_SPEED = 80       # PWM, slow reverse (just above MIN_SPEED)
 BACKOFF_MAX_TIME = 2.0   # s, longest reverse per episode: there is no rear sensor
 BACKOFF_CENTER = 0.25    # |err_x| below this counts as "owner in front of the sonar"
+BACKOFF_ENABLED = False  # reverse away from a too-close owner; OFF: low sonar saw the floor and drove backwards
+FORWARD_ONLY = True      # while following, no wheel ever turns backwards (turn = one side forward, other stopped)
+TURN_MIN = 110           # PWM, minimum for the one moving side when turning on the spot (one side must drag the other)
 SONAR_MAX_AGE = 0.3      # s, older sonar readings are ignored
 SEARCH_SPEED = 90        # PWM per side for in-place rotation (slow; just above MIN_SPEED)
 SPIN_DEG_PER_S = 90.0    # deg/s at SEARCH_SPEED on the demo floor; measure it (plans/search_plan.md S0)!
@@ -106,6 +109,19 @@ def arc(fwd, turn):
     return turn
 
 
+def forward_only(left, right):
+    """Clip both sides to >= 0 so the robot never moves backwards while following. A pivot (L=-R) becomes a turn
+    on one side, raised to TURN_MIN so the moving side can drag the stopped one."""
+    if not FORWARD_ONLY:
+        return left, right
+    left, right = max(0, left), max(0, right)
+    if left > 0 and right == 0:
+        left = max(left, TURN_MIN)
+    elif right > 0 and left == 0:
+        right = max(right, TURN_MIN)
+    return left, right
+
+
 def centre_error(box, W):
     """Owner's horizontal offset from the frame centre: -1 (left) .. +1 (right)."""
     x1, _, x2, _ = box
@@ -147,6 +163,9 @@ def update_backoff(fs, us_cm, centred, cam_dist, now):
     Only when the owner is centred (in the sonar beam) and the camera doesn't say they are far
     (then the sonar sees an obstacle). Reversing is blind, so it lasts at most BACKOFF_MAX_TIME;
     after that it waits until the owner has stepped back past BACKOFF_CLEAR_CM."""
+    if not BACKOFF_ENABLED:
+        fs.backing = False
+        return False
     if fs.backoff_wait:
         if us_cm is not None and us_cm >= BACKOFF_CLEAR_CM:
             fs.backoff_wait = False

@@ -2,7 +2,7 @@
 """
 Owner-following robot (DesiPachinos)
 Features: owner LOCK, UNLOCK, RE-LOCK, SAFE-DISTANCE FOLLOW with dynamic speed and back-off,
-OWNER SEARCH (rotate in place to find a lost owner; disable with --no-search).
+OWNER SEARCH (rotate in place to find a lost owner): OFF by default for now, enable with --search.
 
 Gestures (hold them still):
   - Raise ONE hand above your head for ~1 s  -> robot locks onto you
@@ -34,7 +34,7 @@ from control import (BACKOFF_CENTER, BACKOFF_SPEED, MAX_SPEED, MIN_DIST_CM, OUTR
                      SEARCH_CONFIRM, SIZE_SMOOTH, SONAR_MAX_AGE, TARGET_DIST, TARGET_TORSO, VEL_WINDOW,
                      FollowState, Search, arc, centre_error, est_distance, follow_command, gap_rate,
                      lock_target, mix, owner_speed, parse_distance, ramp_fwd, transition_allowed,
-                     update_backoff)
+                     forward_only, update_backoff)
 from perception import best_match, hands_up, torso_hist, torso_ratio
 
 # ---- Tuning (adjust during testing) ----
@@ -352,11 +352,16 @@ def main():
     ap.add_argument("--no-show", action="store_true", help="no video window (headless robot)")
     ap.add_argument("--stream", type=int, default=None, nargs="?", const=8080,
                     help="stream live annotated video over HTTP (default port: 8080)")
+    ap.add_argument("--search", action="store_true",
+                    help="enable the 360 deg owner search (off by default: robot stops and waits)")
     ap.add_argument("--no-search", action="store_true",
                     help="stop and wait instead of rotating to find a lost owner")
+    ap.add_argument("--mirror", action="store_true",
+                    help="also flip the image left-right (use if the robot turns AWAY from the owner)")
     ap.add_argument("--no-flip", action="store_true",
                     help="camera mounted upright: do not rotate frames 180 deg (default: rotate, camera is inverted)")
     args = ap.parse_args()
+    args.no_search = args.no_search or not args.search   # search is opt-in for now
 
     # Use all 4 CPU cores on Raspberry Pi
     try:
@@ -417,6 +422,8 @@ def main():
                 break
             if not args.no_flip:       # camera is mounted upside down on the robot: rotate 180 deg first
                 frame = cv2.rotate(frame, cv2.ROTATE_180)
+            if args.mirror:
+                frame = cv2.flip(frame, 1)
             H, W = frame.shape[:2]
             now = time.time()
             dt = now - prev_t
@@ -616,7 +623,7 @@ def main():
                                     last_sonar_warn = now
                                     log.warning(f"[SONAR] obstacle at {us} cm but camera says owner "
                                                 f"~{gap:.1f} m -> stop, no reverse")
-                            left, right = mix(fs.fwd, arc(fs.fwd, turn))   # curve towards owner, no spin
+                            left, right = forward_only(*mix(fs.fwd, arc(fs.fwd, turn)))  # never backwards
                             if fs.backing:
                                 hint = f"Too close ({us} cm) - backing off"
                             elif size is not None:
