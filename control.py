@@ -7,16 +7,19 @@ from collections import deque
 import numpy as np
 
 # ---- Tuning (adjust during testing) ----
-TARGET_DIST = 1.0        # m, wanted gap from camera lens to owner (set in plans/distance_plan.md Phase 0)
-TARGET_TORSO = 0.30      # shoulder-to-hip length / frame height at TARGET_DIST; fallback only, see LOCK_TARGET
-LOCK_TARGET = True       # use the owner's torso size at lock time as the target (lock from ~TARGET_DIST away!)
-TARGET_MIN, TARGET_MAX = 0.12, 0.80   # sane range for a lock-time target (outside it -> TARGET_TORSO)
+TARGET_DIST = 0.4        # m, wanted gap from camera lens to owner while following
+LOCK_DIST = 1.0          # m, how far the owner stands when raising a hand to lock (sizes are learned there)
+TARGET_TORSO = 0.75      # shoulder-to-hip length / frame height at TARGET_DIST; fallback only, see LOCK_TARGET
+LOCK_TARGET = True       # learn the target from the owner's size at lock, scaled from LOCK_DIST to TARGET_DIST
+TARGET_MIN, TARGET_MAX = 0.08, 0.80   # sane range for the torso size seen at lock (outside it -> TARGET_TORSO)
+SIZE_CAP = 0.95          # a learned target can't exceed this fraction of the frame
 DEADBAND = 0.03          # once stopped, start again only when the torso is this much smaller (~10 % of TARGET_TORSO)
 SIZE_SMOOTH = 0.3        # 0..1, weight of the newest frame in the smoothed torso size
 CENTER_DEADBAND = 0.10   # no turning when owner is this close to the frame centre
 PIVOT_ERR = 0.30         # when stopped, turn on the spot only if the owner is this far off-centre (no wiggling)
-BOX_TARGET = 0.35        # box width / frame width at TARGET_DIST: fallback distance cue when the torso is hidden
-BOX_MIN, BOX_MAX = 0.12, 0.80   # sane range for the box-width target learned after lock
+BOX_TARGET = 0.80        # box width / frame width at TARGET_DIST: fallback distance cue when the torso is hidden
+BOX_MIN, BOX_MAX = 0.08, 0.80   # sane range for the box width seen right after lock (at ~LOCK_DIST)
+EDGE_FRAC = 0.02         # box within this fraction of the left/right frame edge = cut off: width is not trusted
 BOX_SMOOTH = 0.3         # 0..1, weight of the newest frame in the smoothed box width
 K_FWD = 1000             # forward gain (torso sizes are about half of box sizes)
 K_TURN = 160             # turning gain
@@ -30,8 +33,8 @@ RAMP_UP = 250            # PWM/s, max forward speed increase (MIN_SPEED -> 200 i
 RAMP_DOWN = 500          # PWM/s, max forward speed decrease while still driving (full stops are instant)
 OUTRUN_DIST = 2.5        # m, gap that counts as "owner got away"
 OUTRUN_TIME = 1.5        # s at near-full speed with gap > OUTRUN_DIST before giving up
-MIN_DIST_CM = 60         # cm, back off when the centred owner is closer than this (sonar)
-BACKOFF_CLEAR_CM = 75    # cm, stop backing off once the owner is this far (hysteresis)
+MIN_DIST_CM = 25         # cm, back off when the centred owner is closer than this (sonar; back-off is OFF)
+BACKOFF_CLEAR_CM = 35    # cm, stop backing off once the owner is this far (hysteresis)
 BACKOFF_SPEED = 80       # PWM, slow reverse (just above MIN_SPEED)
 BACKOFF_MAX_TIME = 2.0   # s, longest reverse per episode: there is no rear sensor
 BACKOFF_CENTER = 0.25    # |err_x| below this counts as "owner in front of the sonar"
@@ -62,7 +65,7 @@ def est_distance(size, target=TARGET_TORSO):
 def lock_target(size):
     """Follow target from the owner's torso size at lock time, or TARGET_TORSO if unusable / disabled."""
     if LOCK_TARGET and size is not None and TARGET_MIN <= size <= TARGET_MAX:
-        return size
+        return min(SIZE_CAP, size * LOCK_DIST / TARGET_DIST)   # size ∝ 1/distance
     return TARGET_TORSO
 
 
@@ -162,7 +165,15 @@ def box_width(box, W):
 
 def box_target(width):
     """Box-width target learned from the owner's first hands-down frame after lock, or BOX_TARGET."""
-    return width if width is not None and BOX_MIN <= width <= BOX_MAX else BOX_TARGET
+    if width is not None and BOX_MIN <= width <= BOX_MAX:
+        return min(SIZE_CAP, width * LOCK_DIST / TARGET_DIST)
+    return BOX_TARGET
+
+
+def box_cut_off(box, W):
+    """Owner's box touches the left or right frame edge: its width and centre are not reliable."""
+    x1, _, x2, _ = box
+    return x1 <= EDGE_FRAC * W or x2 >= (1 - EDGE_FRAC) * W
 
 
 def parse_distance(buf):

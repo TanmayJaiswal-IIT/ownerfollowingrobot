@@ -32,7 +32,7 @@ from ultralytics import YOLO
 from camera import open_camera
 from control import (BACKOFF_CENTER, CENTER_DEADBAND, BACKOFF_SPEED, MAX_SPEED, MIN_DIST_CM, OUTRUN_DIST, OUTRUN_TIME,
                      SEARCH_CONFIRM, SIZE_SMOOTH, SONAR_MAX_AGE, TARGET_DIST, TARGET_TORSO, VEL_WINDOW,
-                     BOX_SMOOTH, FollowState, Search, arc, box_target, box_width, centre_error, est_distance, follow_command, gap_rate,
+                     BOX_SMOOTH, FollowState, box_cut_off, Search, arc, box_target, box_width, centre_error, est_distance, follow_command, gap_rate,
                      lock_target, mix, owner_speed, parse_distance, ramp_fwd, transition_allowed,
                      forward_only, update_backoff)
 from perception import best_match, hands_up, torso_hist, torso_ratio
@@ -572,10 +572,10 @@ def main():
                         log.info(f"[LOCK] follow target box width = {target_box:.2f} (used when torso hidden)")
                     if raw is not None:          # torso visible: best distance cue
                         size, target, cue = fs.size_s, target_torso, "torso"
-                    elif target_box is not None:  # torso hidden (low camera, too close): use box width
+                    elif target_box is not None and not box_cut_off(box, W):  # torso hidden: use box width
                         size, target, cue = box_s, target_box, "box"
                     else:
-                        size, target, cue = None, target_torso, "none"
+                        size, target, cue = None, target_torso, "none"   # unmeasurable: steer only, no drive
                     gap = est_distance(size, target)
 
                     if outran and gap is not None and gap < OUTRUN_DIST:

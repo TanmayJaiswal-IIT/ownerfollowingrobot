@@ -13,7 +13,7 @@ complexity. No ROS, no cloud, no custom model training.
 
 ## End goal (final demo, ~2 minutes)
 1. Owner raises one hand -> robot locks onto them.
-2. Owner walks around -> robot follows at ~1 m; a second person crossing the view is ignored.
+2. Owner walks around -> robot follows at ~0.4 m (lock from ~1 m away); a second person crossing the view is ignored.
 3. Owner steps out of view and returns -> robot re-locks by clothing appearance.
 4. Owner raises both hands -> robot unlocks and goes idle.
 5. Obstacle placed in the path -> robot stops on its own.
@@ -111,7 +111,7 @@ complexity. No ROS, no cloud, no custom model training.
 
 ## End goal (final demo, ~2 minutes)
 1. Owner raises one hand -> robot locks onto them.
-2. Owner walks around -> robot follows at ~1 m; a second person crossing the view is ignored.
+2. Owner walks around -> robot follows at ~0.4 m (lock from ~1 m away); a second person crossing the view is ignored.
 3. Owner steps out of view and returns -> robot re-locks by clothing appearance.
 4. Owner raises both hands -> robot unlocks and goes idle.
 5. Obstacle placed in the path -> robot stops on its own.

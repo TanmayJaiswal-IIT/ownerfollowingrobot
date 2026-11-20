@@ -110,25 +110,26 @@ check("T22 parse distance", parse_distance("D,45\nD,4") == (45, "D,4")
       and parse_distance("D,999\n") == (999, "") and parse_distance("D,1") == (None, "D,1"))
 
 fs = FollowState()
-control.BACKOFF_ENABLED = True   # T23-T27 test the (currently disabled) back-off logic itself
-check("T23 back-off starts", update_backoff(fs, 50, True, None, 0.0))
-check("T24 not centred -> no back-off", not update_backoff(FollowState(), 50, False, None, 0.0))
-check("T25 camera says far -> obstacle, no back-off", not update_backoff(FollowState(), 50, True, 2.0, 0.0))
+control.BACKOFF_ENABLED = True   # T23-T28 test the (currently disabled) back-off logic itself
+NEAR_CM = control.MIN_DIST_CM - 10
+check("T23 back-off starts", update_backoff(fs, NEAR_CM, True, None, 0.0))
+check("T24 not centred -> no back-off", not update_backoff(FollowState(), NEAR_CM, False, None, 0.0))
+check("T25 camera says far -> obstacle, no back-off", not update_backoff(FollowState(), NEAR_CM, True, 2.0, 0.0))
 check("T26 no sonar reading -> no back-off", not update_backoff(FollowState(), None, True, None, 0.0))
 
 fs = FollowState()
-update_backoff(fs, 50, True, None, 0.0)
+update_backoff(fs, NEAR_CM, True, None, 0.0)
 check("T27 hysteresis", update_backoff(fs, BACKOFF_CLEAR_CM - 5, True, None, 0.5)
       and not update_backoff(fs, BACKOFF_CLEAR_CM + 5, True, None, 0.6))
 
 fs = FollowState()
-update_backoff(fs, 50, True, None, 0.0)
+update_backoff(fs, NEAR_CM, True, None, 0.0)
 t = BACKOFF_MAX_TIME + 0.1
 check("T28 time cap, wait for step back",
-      not update_backoff(fs, 50, True, None, t)
-      and not update_backoff(fs, 50, True, None, t + 0.5)
+      not update_backoff(fs, NEAR_CM, True, None, t)
+      and not update_backoff(fs, NEAR_CM, True, None, t + 0.5)
       and not update_backoff(fs, BACKOFF_CLEAR_CM + 5, True, None, t + 1.0)
-      and update_backoff(fs, 50, True, None, t + 1.5))
+      and update_backoff(fs, NEAR_CM, True, None, t + 1.5))
 
 # ---- owner search ----
 TURN_T = SEARCH_STEP_DEG / SPIN_DEG_PER_S
@@ -203,7 +204,8 @@ check("T37 all states reachable from IDLE, and IDLE reachable from all",
       and all("IDLE" in reachable(s, TRANSITIONS) for s in STATES))
 
 # ---- move towards the owner (lock-time target, curve instead of spin) ----
-check("T38 lock target from owner's size", close(lock_target(0.55), 0.55)
+check("T38 lock target from owner's size, scaled to TARGET_DIST",
+      close(lock_target(0.2), min(control.SIZE_CAP, 0.2 * control.LOCK_DIST / TARGET_DIST))
       and lock_target(None) == TARGET_TORSO and lock_target(0.95) == TARGET_TORSO)
 fwd, _, d = follow_command(CENTRED, W, 0.40, False, None, target=0.55)
 check("T39 owner farther than at lock -> drive forward", fwd >= MIN_SPEED and d)
@@ -225,7 +227,8 @@ check("T46 back-off disabled -> never reverses", not update_backoff(FollowState(
 # ---- drive towards the owner when the torso is hidden (box width), no wiggling ----
 from control import BOX_TARGET, box_target, box_width
 check("T47 box width", close(box_width((100, 0, 260, 480), W), 0.25))
-check("T48 box target learned or fallback", close(box_target(0.4), 0.4) and box_target(None) == BOX_TARGET
+check("T48 box target learned or fallback",
+      close(box_target(0.3), min(control.SIZE_CAP, 0.3 * control.LOCK_DIST / TARGET_DIST)) and box_target(None) == BOX_TARGET
       and box_target(0.95) == BOX_TARGET)
 fwd, turn, d = follow_command(CENTRED, W, 0.20, False, None, target=0.40)
 check("T49 torso hidden but box small (owner far) -> drive forward", fwd >= MIN_SPEED and d)
@@ -234,5 +237,10 @@ check("T50 stopped, owner slightly off-centre -> no spin", turn == 0 and not d)
 fwd, turn, d = follow_command((W / 2 + 10, 100, W / 2 + 130, 400), W, 0.20, False, None, target=0.40)
 L, R = forward_only(*mix(fwd, arc(fwd, turn)))
 check("T51 driving, owner slightly right -> curve right, both forward", L > R > 0)
+
+from control import box_cut_off
+check("T52 box cut off at frame edge -> width not trusted", box_cut_off((0, 0, 300, 480), W)
+      and box_cut_off((400, 0, W, 480), W) and not box_cut_off(CENTRED, W))
+check("T53 follow distance is short", TARGET_DIST <= 0.5)
 
 print("All tests passed.")
