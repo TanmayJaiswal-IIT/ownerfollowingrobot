@@ -21,7 +21,9 @@ Pi Camera Module:              python follower.py --source picam --port /dev/tty
 Press q in the video window to quit. Logs go to the terminal and to follower.log.
 """
 import argparse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import logging
+import threading
 import time
 
 import cv2
@@ -120,6 +122,160 @@ class Motors:
             self.ser.close()
 
 
+HTML_PAGE = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Owner-Following Robot Live Feed</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background-color: #0d1117;
+            color: #c9d1d9;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        .header {
+            position: absolute;
+            top: 12px;
+            left: 16px;
+            right: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 10;
+            pointer-events: none;
+        }
+        .title {
+            background: rgba(0, 0, 0, 0.7);
+            padding: 6px 14px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 14px;
+            letter-spacing: 0.5px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .btn {
+            pointer-events: auto;
+            background: #238636;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            font-size: 13px;
+            font-weight: 600;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.2s;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        }
+        .btn:hover { background: #2ea043; }
+        .stream-container {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #000;
+        }
+        img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="title">🤖 ROBOT CAM - LIVE TELEMETRY</div>
+        <button class="btn" onclick="toggleFS()">⛶ Fullscreen</button>
+    </div>
+    <div class="stream-container">
+        <img src="/stream.mjpg" alt="Robot Live Camera">
+    </div>
+    <script>
+        function toggleFS() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+            } else {
+                document.exitFullscreen();
+            }
+        }
+    </script>
+</body>
+</html>"""
+
+
+class VideoStreamHandler(BaseHTTPRequestHandler):
+    server_ref = None
+
+    def log_message(self, format, *args):
+        pass  # suppress HTTP logs in console
+
+    def do_GET(self):
+        if self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Cache-Control', 'no-cache')
+            self.end_headers()
+            self.wfile.write(HTML_PAGE.encode('utf-8'))
+            return
+
+        self.send_response(200)
+        self.send_header('Age', '0')
+        self.send_header('Cache-Control', 'no-cache, private')
+        self.send_header('Pragma', 'no-cache')
+        self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=FRAME')
+        self.end_headers()
+        try:
+            while True:
+                jpeg = self.server_ref.get_frame() if self.server_ref else None
+                if jpeg is not None:
+                    self.wfile.write(b'--FRAME\r\n')
+                    self.send_header('Content-Type', 'image/jpeg')
+                    self.send_header('Content-Length', str(len(jpeg)))
+                    self.end_headers()
+                    self.wfile.write(jpeg)
+                    self.wfile.write(b'\r\n')
+                time.sleep(0.03)  # up to ~30 FPS
+        except Exception:
+            pass
+
+
+class StreamServer:
+    def __init__(self, port):
+        self.port = port
+        self.latest_jpeg = None
+        self.lock = threading.Lock()
+        VideoStreamHandler.server_ref = self
+        self.httpd = ThreadingHTTPServer(('0.0.0.0', port), VideoStreamHandler)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        log.info(f"[STREAM] Live browser stream available at http://<pi-ip>:{port}/")
+
+    def update_frame(self, frame):
+        ret, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 65])
+        if ret:
+            with self.lock:
+                self.latest_jpeg = jpeg.tobytes()
+
+    def get_frame(self):
+        with self.lock:
+            return self.latest_jpeg
+
+    def close(self):
+        try:
+            self.httpd.shutdown()
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------- on-screen display
 
 def text_size(text, scale, thick):
@@ -192,13 +348,29 @@ def main():
     ap.add_argument("--model", default="yolov8n-pose.pt")
     ap.add_argument("--imgsz", type=int, default=320, help="320 is fast; 640 is more accurate")
     ap.add_argument("--no-show", action="store_true", help="no video window (headless robot)")
+    ap.add_argument("--stream", type=int, default=None, nargs="?", const=8080,
+                    help="stream live annotated video over HTTP (default port: 8080)")
     ap.add_argument("--no-search", action="store_true",
                     help="stop and wait instead of rotating to find a lost owner")
     args = ap.parse_args()
 
+    # Use all 4 CPU cores on Raspberry Pi
+    try:
+        import torch
+        torch.set_num_threads(4)
+    except Exception:
+        pass
+
+    # Automatically use ultra-fast NCNN model if available on Raspberry Pi (40+ FPS)
+    import os
+    if args.model == "yolov8n-pose.pt" and os.path.isdir("yolov8n-pose_ncnn_model"):
+        args.model = "yolov8n-pose_ncnn_model"
+
     setup_logging()
     log.info(f"[START] model={args.model} imgsz={args.imgsz} source={args.source} "
-             f"show={'no' if args.no_show else 'yes'} log file={LOG_FILE}")
+             f"show={'no' if args.no_show else 'yes'} stream={args.stream} log file={LOG_FILE}")
+
+    streamer = StreamServer(args.stream) if args.stream else None
 
     model = YOLO(args.model)
     cap, cam_info = open_camera(args.source)
@@ -225,12 +397,17 @@ def main():
     last_err = 0.0            # owner's last horizontal offset: which way to search first
     not_found_until = 0.0     # show "OWNER NOT FOUND" until this time
     frames = 0
+    warmup_retries = 0
 
     log.info("[IDLE] waiting: raise ONE hand above your head to lock")
     try:
         while True:
             ok, frame = cap.read()
             if not ok:
+                if frames == 0 and warmup_retries < 30:
+                    warmup_retries += 1
+                    time.sleep(0.1)
+                    continue
                 log.error("[CAMERA] no frame from camera (camera busy, unplugged or end of video)")
                 break
             H, W = frame.shape[:2]
@@ -459,7 +636,7 @@ def main():
                          f"ov={ov} fwd={fs.fwd:.0f} us={us if us is not None else '-'} "
                          f"search={f'{search.progress()}/360' if search else '-'} fps={fps:.1f}")
 
-            if not args.no_show:
+            if not args.no_show or streamer:
                 banner = None
                 if state == "LOST":
                     banner = ("OWNER LOST - STOPPED", (0, 0, 200))
@@ -468,13 +645,18 @@ def main():
                 elif state == "IDLE" and now < not_found_until:
                     banner = ("OWNER NOT FOUND", (0, 0, 200))
                 draw_overlay(frame, people, owner_id, state, left, right, fps, hint, banner)
-                cv2.imshow("Owner Follower", frame)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    log.info("[QUIT] q pressed")
-                    break
+                if streamer:
+                    streamer.update_frame(frame)
+                if not args.no_show:
+                    cv2.imshow("Owner Follower", frame)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        log.info("[QUIT] q pressed")
+                        break
     except KeyboardInterrupt:
         log.info("[QUIT] Ctrl+C")
     finally:
+        if streamer:
+            streamer.close()
         motors.close()
         cap.release()
         cv2.destroyAllWindows()
