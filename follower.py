@@ -17,6 +17,7 @@ States (allowed changes: TRANSITIONS in control.py; every change is logged as "[
 Run on a laptop (no robot):    python follower.py
 Run with the Arduino attached: python follower.py --port /dev/tty.usbmodem1101   (Mac)
                                python follower.py --port /dev/ttyACM0            (Pi / Jetson)
+Pi Camera Module:              python follower.py --source picam --port /dev/ttyACM0 --no-show
 Press q in the video window to quit. Logs go to the terminal and to follower.log.
 """
 import argparse
@@ -28,6 +29,7 @@ import time
 import cv2
 from ultralytics import YOLO
 
+from camera import open_camera
 from control import (BACKOFF_CENTER, BACKOFF_SPEED, MAX_SPEED, MIN_DIST_CM, OUTRUN_DIST, OUTRUN_TIME,
                      SEARCH_CONFIRM, SIZE_SMOOTH, SONAR_MAX_AGE, TARGET_DIST, TARGET_TORSO, VEL_WINDOW,
                      FollowState, Search, centre_error, est_distance, follow_command, gap_rate, mix,
@@ -340,7 +342,8 @@ def draw_overlay(frame, people, owner_id, state, left, right, fps, hint, banner=
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--source", default="0", help="camera index or video file")
+    ap.add_argument("--source", default="0",
+                    help="camera index, video file, or 'picam' for the Raspberry Pi Camera Module")
     ap.add_argument("--port", default=None, help="Arduino serial port (omit for laptop testing)")
     ap.add_argument("--model", default="yolov8n-pose.pt")
     ap.add_argument("--imgsz", type=int, default=320, help="320 is fast; 640 is more accurate")
@@ -370,14 +373,11 @@ def main():
     streamer = StreamServer(args.stream) if args.stream else None
 
     model = YOLO(args.model)
-    cap = cv2.VideoCapture(int(args.source) if args.source.isdigit() else args.source)
-    if not cap.isOpened():
-        log.error("[CAMERA] could not open the camera. On a Mac: System Settings > Privacy & "
-                  "Security > Camera > allow Terminal / VS Code, then restart it. "
-                  "Or try --source 1.")
+    cap, cam_info = open_camera(args.source)
+    if cap is None:
+        log.error(f"[CAMERA] {cam_info}")
         return
-    log.info(f"[CAMERA] opened {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
-             f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}")
+    log.info(f"[CAMERA] opened {cam_info}")
     motors = Motors(args.port)
 
     state = "IDLE"            # see TRANSITIONS in control.py; change it only with change_state()
